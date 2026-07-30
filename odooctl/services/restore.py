@@ -199,6 +199,7 @@ def restore_to_env(
     if source_is_protected:
         compose = make_runtime_adapter(
             ctx.project,
+            environment=target_environment,
             compose_adapter_cls=DockerComposeAdapter,
         )
         native_capability = probe_native_neutralization(cfg, compose=compose)

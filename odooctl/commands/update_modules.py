@@ -10,10 +10,11 @@ from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
 
 
-def _runtime_adapter(context: ProjectContext):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
         return make_runtime_adapter(
             context,
+            environment=environment,
             compose_adapter_cls=DockerComposeAdapter,
         )
     except TypeError:
@@ -38,7 +39,7 @@ def execute(environment: str, modules: list[str] | None = None, config_path: str
         state_dir=context.state_dir,
     ) as op_ctx:
         op_ctx.emit(f"updating modules: {selected}", phase="update")
-        compose = _runtime_adapter(context)
+        compose = _runtime_adapter(context, environment)
         update_modules_compose(
             compose,
             cfg.odoo.service,

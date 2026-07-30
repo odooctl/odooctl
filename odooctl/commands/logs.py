@@ -5,10 +5,11 @@ from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.context import ProjectContext
 
 
-def _runtime_adapter(context: ProjectContext):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
         return make_runtime_adapter(
             context,
+            environment=environment,
             compose_adapter_cls=DockerComposeAdapter,
         )
     except TypeError:
@@ -26,7 +27,7 @@ def execute(
     context = ProjectContext.from_config_path(config_path)
     cfg = context.config
     cfg.env(environment)
-    _runtime_adapter(context).logs(
+    _runtime_adapter(context, environment).logs(
         service or cfg.odoo.service,
         follow=follow,
         tail=tail,

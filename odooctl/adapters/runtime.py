@@ -29,6 +29,8 @@ class RuntimeAdapter(Protocol):
 
     def restart(self, workload: str) -> None: ...
 
+    def delete(self, workload: str | None = None) -> None: ...
+
     def logs(
         self,
         workload: str | None = None,
@@ -69,6 +71,7 @@ class RuntimeAdapter(Protocol):
 def make_runtime_adapter(
     project: ProjectContext,
     *,
+    environment: str | None = None,
     compose_adapter_cls: type | None = None,
 ) -> RuntimeAdapter:
     """Create the configured runtime without leaking provider choices.
@@ -84,6 +87,12 @@ def make_runtime_adapter(
 
             compose_adapter_cls = DockerComposeAdapter
         return compose_adapter_cls(runtime.compose_file, project_dir=str(project.root))
+    if runtime.type == "kubernetes":
+        if environment is None:
+            raise ValueError("The Kubernetes runtime requires an environment")
+        from odooctl.adapters.kubernetes import KubernetesAdapter
+
+        return KubernetesAdapter(project, environment)
     raise ValueError(f"Unsupported runtime type: {runtime.type}")
 
 

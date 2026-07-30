@@ -1,0 +1,36 @@
+project:
+  name: acme-erp
+  odoo_version: "19.0"
+
+runtime:
+  type: kubernetes
+  context: production
+  namespace_template: "{project}-{environment}"
+  manifests_path: .odooctl/rendered/kubernetes
+  replicas: 2
+  postgres_mode: external
+  secret_refs:
+    PGPASSWORD:
+      name: odoo-database
+      key: password
+
+postgres:
+  host: postgres-rw.database.svc.cluster.local
+  user: odoo
+  password_env: ODOO_DB_PASSWORD
+
+odoo:
+  image: registry.example.com/acme/odoo:19
+  service: odoo
+  db_host: postgres-rw.database.svc.cluster.local
+  db_user: odoo
+  db_password_env: ODOO_DB_PASSWORD
+
+environments:
+  production:
+    tier: production
+    branch: main
+    domain: erp.example.com
+    db_name: acme_production
+    filestore_path: acme_production
+    filestore_volume: odoo-filestore

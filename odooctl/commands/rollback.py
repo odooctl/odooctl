@@ -20,10 +20,11 @@ from odooctl.utils.logging import warn
 from odooctl.utils.shell import run
 
 
-def _runtime_adapter(context: ProjectContext):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
         return make_runtime_adapter(
             context,
+            environment=environment,
             compose_adapter_cls=DockerComposeAdapter,
         )
     except TypeError:
@@ -105,7 +106,7 @@ def _run_rollback(context, environment, mode, backup, config_path, op_ctx=None):
         public_url(env.domain, scheme=scheme, port=env.port) + cfg.healthcheck.path,
         env.db_name if env.db_selector else None,
     )
-    compose = _runtime_adapter(context)
+    compose = _runtime_adapter(context, environment)
     meta_store = _store(context.state_dir)
     status = "failed"
     message = None

@@ -129,17 +129,23 @@ class FilestoreAdapter:
             shutil.rmtree(path)
 
 
-class DockerVolumeFilestore:
-    """Filestore backend for Odoo filestores stored in a Docker named volume.
+class RuntimeVolumeFilestore:
+    """Filestore backend for Odoo filestores stored in a runtime volume.
 
     Odoo's official image stores filestores below ``/var/lib/odoo/filestore``.
-    Archive/restore stream tar bytes through ``docker compose exec -T`` so hosts do
-    not need a bind-mounted filestore path.
+    Archive/restore streams tar bytes through the configured runtime so hosts
+    do not need a bind-mounted filestore path.
     """
 
-    def __init__(self, context: ProjectContext, cfg: OdooCtlConfig):
+    def __init__(
+        self,
+        context: ProjectContext,
+        cfg: OdooCtlConfig,
+        environment: str | None = None,
+    ):
         self.compose = make_runtime_adapter(
             context,
+            environment=environment,
             compose_adapter_cls=DockerComposeAdapter,
         )
         self.service = cfg.odoo.service
@@ -224,7 +230,18 @@ class DockerVolumeFilestore:
         return result.returncode == 0
 
 
+DockerVolumeFilestore = RuntimeVolumeFilestore
+
+
 def make_filestore_adapter(context: ProjectContext, env: EnvironmentConfig) -> FilestoreBackend:
     if env.filestore_volume:
-        return DockerVolumeFilestore(context, context.config)
+        environment = next(
+            (
+                name
+                for name, candidate in context.config.environments.items()
+                if candidate is env or candidate == env
+            ),
+            None,
+        )
+        return RuntimeVolumeFilestore(context, context.config, environment)
     return FilestoreAdapter()

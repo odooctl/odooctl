@@ -83,6 +83,101 @@ class RuntimeConfig(BaseModel):
     execution_mode: Literal["docker", "host"] = "host"
 
 
+class KubernetesSecretKeyRef(BaseModel):
+    """Reference to one key in an existing Kubernetes Secret."""
+
+    name: str
+    key: str
+
+    @field_validator("name")
+    @classmethod
+    def name_must_be_dns_safe(cls, value: str) -> str:
+        if (
+            len(value) > 253
+            or not re.fullmatch(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?", value)
+        ):
+            raise ValueError("kubernetes secret name must be a DNS-safe name")
+        return value
+
+    @field_validator("key")
+    @classmethod
+    def key_must_be_safe(cls, value: str) -> str:
+        if len(value) > 253 or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            raise ValueError("kubernetes secret key contains unsafe characters")
+        return value
+
+
+class KubernetesRuntimeConfig(BaseModel):
+    type: Literal["kubernetes"] = "kubernetes"
+    context: str | None = None
+    namespace_template: str = "{project}-{environment}"
+    manifests_path: str = ".odooctl/rendered/kubernetes"
+    reverse_proxy: Literal["ingress"] = "ingress"
+    execution_mode: Literal["host"] = "host"
+    kubectl_command: str = "kubectl"
+    ingress_class: str | None = None
+    replicas: int = Field(default=1, ge=1, le=100)
+    service_port: int = Field(default=8069, ge=1, le=65535)
+    container_port: int = Field(default=8069, ge=1, le=65535)
+    image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
+    filestore_claim_size: str = "10Gi"
+    storage_class: str | None = None
+    postgres_mode: Literal["external", "cloudnativepg"] = "external"
+    secret_refs: dict[str, KubernetesSecretKeyRef] = Field(default_factory=dict)
+
+    @field_validator("context", "ingress_class")
+    @classmethod
+    def optional_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return None
+        return validate_identifier(value, f"kubernetes {info.field_name}")
+
+    @field_validator("kubectl_command")
+    @classmethod
+    def kubectl_command_must_be_a_name(cls, value: str) -> str:
+        if value not in {"kubectl", "k3s"}:
+            raise ValueError("kubectl_command must be 'kubectl' or 'k3s'")
+        return value
+
+    @field_validator("namespace_template")
+    @classmethod
+    def namespace_template_must_be_bounded(cls, value: str) -> str:
+        unknown = re.sub(r"\{(?:project|environment)\}", "", value)
+        if "{" in unknown or "}" in unknown:
+            raise ValueError(
+                "namespace_template may only use {project} and {environment}"
+            )
+        if not value or len(value) > 128:
+            raise ValueError("namespace_template must be between 1 and 128 characters")
+        return value
+
+    @field_validator("manifests_path")
+    @classmethod
+    def manifests_path_must_be_relative(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("manifests_path must be a project-relative path")
+        return value
+
+    @field_validator("secret_refs")
+    @classmethod
+    def secret_env_names_must_be_safe(
+        cls,
+        value: dict[str, KubernetesSecretKeyRef],
+    ) -> dict[str, KubernetesSecretKeyRef]:
+        env_pattern = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+        for name in value:
+            if not env_pattern.fullmatch(name):
+                raise ValueError(
+                    f"kubernetes secret environment name {name!r} is invalid"
+                )
+        return value
+
+
 class FilestoreObjectStoreConfig(BaseModel):
     """S3-compatible object namespace used by filestore backends."""
 
@@ -834,7 +929,10 @@ class HealthcheckConfig(BaseModel):
 
 class OdooCtlConfig(BaseModel):
     project: ProjectConfig
-    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    runtime: RuntimeConfig | KubernetesRuntimeConfig = Field(
+        default_factory=RuntimeConfig,
+        discriminator="type",
+    )
     environments: dict[str, EnvironmentConfig]
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     odoo: OdooConfig
@@ -844,6 +942,14 @@ class OdooCtlConfig(BaseModel):
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def legacy_runtime_defaults_to_compose(cls, value: object) -> object:
+        """Keep pre-R7 runtime mappings valid when ``type`` was omitted."""
+        if isinstance(value, dict) and "type" not in value:
+            return {"type": "docker_compose", **value}
+        return value
 
     @field_validator("environments")
     @classmethod

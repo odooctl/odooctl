@@ -5,7 +5,12 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://github.com/odooctl/odooctl/blob/master/pyproject.toml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-`odooctl` is a CLI-first, Odoo-aware control plane for self-hosted Odoo on Docker Compose — think open-source Odoo.sh for your own server. It handles the operational lifecycle generic deploy tools miss: verified backups, sanitized staging clones, module updates, rollback, environment promotion, upgrade rehearsal, and health checks, all Odoo- and PostgreSQL-aware. It runs against the compose stack you already have; you keep your server, your data, and your compose files.
+`odooctl` is a CLI-first, Odoo-aware control plane for self-hosted Odoo on
+Docker Compose or Kubernetes — think open-source Odoo.sh for your own
+infrastructure. It handles the operational lifecycle generic deploy tools miss:
+verified backups, sanitized staging clones, module updates, rollback,
+environment promotion, upgrade rehearsal, and health checks, all Odoo- and
+PostgreSQL-aware. Existing Compose projects remain the zero-migration default.
 
 ## Why odooctl
 
@@ -85,6 +90,7 @@ odooctl status
 | Disaster recovery and provider snapshots | `odooctl dr drill`, `odooctl dr snapshot` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
 | PostgreSQL WAL archiving and PITR | `odooctl pitr` | [docs/pitr.md](docs/pitr.md) |
 | Object-storage filestore migration | `odooctl filestore` | [docs/filestore-storage.md](docs/filestore-storage.md) |
+| Kubernetes runtime and production manifests | `odooctl deploy`, `odooctl logs`, `odooctl status` | [docs/kubernetes.md](docs/kubernetes.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |

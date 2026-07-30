@@ -42,7 +42,7 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
         raise RuntimeError(f"Branch '{branch}' is not allowed for environment '{environment}'")
     validate_runtime_definition(ctx.project)
     filestore_path = ctx.project.resolve_path(env.filestore_path)
-    if not filestore_path.exists():
+    if not env.filestore_volume and not filestore_path.exists():
         raise FileNotFoundError(f"Target filestore path not found: {filestore_path}")
     try:
         pg = (
@@ -65,6 +65,7 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
     )
     compose = make_runtime_adapter(
         ctx.project,
+        environment=environment,
         compose_adapter_cls=DockerComposeAdapter,
     )
     backup_id = None
