@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: IN PROGRESS  
 Branch: `codex/reddit-enhancements`
 
-Implemented through: R6 (runtime/orchestrator abstraction)
+Implemented through: R7 (k3s/Kubernetes runtime)
 
 ## Why this program exists
 

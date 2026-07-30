@@ -73,6 +73,7 @@ def run_clone(
                 )
     compose = make_runtime_adapter(
         ctx.project,
+        environment=target,
         compose_adapter_cls=DockerComposeAdapter,
     )
     native_capability = (

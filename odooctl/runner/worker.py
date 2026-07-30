@@ -802,7 +802,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
         path_requires_ou = any(p.requires_openupgrade for p in matrix_paths)
 
         def _upgrade_fn(throwaway_db: str, tgt_ver: str) -> UpgradeResult:
-            runtime = make_runtime_adapter(svc_ctx.project)
+            runtime = make_runtime_adapter(svc_ctx.project, environment=env)
             if use_openupgrade:
                 from odooctl.migration.openupgrade import openupgrade_db_command
 

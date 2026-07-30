@@ -1,6 +1,8 @@
 # Execution Modes
 
-`odooctl` supports two PostgreSQL execution modes.
+`odooctl` supports two PostgreSQL execution modes. These are independent of
+the workload runtime: Docker Compose may use either mode, while Kubernetes uses
+host mode against an externally managed PostgreSQL endpoint.
 
 ## Docker mode
 
@@ -39,3 +41,6 @@ postgres:
 ```
 
 Host mode is backward-compatible with the original MVP behavior.
+
+See [Kubernetes runtime](kubernetes.md) for Kubernetes workload execution and
+CloudNativePG integration.

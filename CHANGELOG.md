@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A workload runtime protocol and central factory for deploy, restart, exec,
   logs, status, and Odoo command execution. Docker Compose remains the
   configuration-compatible default.
+- A project/environment-scoped Kubernetes runtime with canonical Deployment,
+  Service, Ingress, filestore PVC, and Namespace rendering; secret-key
+  references; exec/log/rollout/status support; and fail-closed ownership
+  labels. Externally managed PostgreSQL is the default, with CloudNativePG
+  integration documented.
 - Policy-controlled remote portable backups with `required`, `best_effort`,
   and `disabled` modes; post-upload byte verification; project-scoped S3
   namespaces; globally unique 24-hex-suffixed backup IDs; UTC

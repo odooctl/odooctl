@@ -13,7 +13,8 @@ Guidelines:
 Key sections:
 
 - `project`: project name and Odoo version.
-- `runtime`: Docker Compose file, reverse-proxy mode, and `execution_mode` (`docker` or `host`).
+- `runtime`: Docker Compose or Kubernetes workload runtime, provider settings,
+  and PostgreSQL `execution_mode`.
 - `environments`: per-environment branch, scheme/domain/port, database, filestore, clone source, sanitization flag, `db_selector`, and module update list.
 - `postgres`: host-side connection settings plus Docker service/internal-host settings for container-native operations.
 - `odoo`: image, native CLI command, config path, addons paths, service name,
@@ -30,6 +31,11 @@ Key sections:
 - `redaction`: log-redaction policy for sensitive environment values.
 
 ## Docker vs host execution
+
+This setting controls PostgreSQL client execution, not the workload
+orchestrator. Kubernetes always uses host mode with an externally reachable
+PostgreSQL endpoint. See [Kubernetes runtime](kubernetes.md) for namespaces,
+Secret references, manifests, and CloudNativePG integration.
 
 `runtime.execution_mode: docker` runs PostgreSQL operations through the configured Compose DB service. Use this for the common topology where the DB service is named `db` and port `5432` is not published to the host:
 

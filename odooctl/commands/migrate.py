@@ -123,7 +123,7 @@ def rehearse(
     def _upgrade_fn(throwaway_db: str, target_version: str) -> UpgradeResult:
         from odooctl.adapters.runtime import make_runtime_adapter
 
-        runtime = make_runtime_adapter(ctx.project)
+        runtime = make_runtime_adapter(ctx.project, environment=env)
         if openupgrade:
             from odooctl.migration.openupgrade import openupgrade_db_command
 

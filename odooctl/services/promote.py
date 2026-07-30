@@ -110,6 +110,7 @@ def run_promote(
     selected_branch = tgt_env.branch
     compose = make_runtime_adapter(
         ctx.project,
+        environment=target,
         compose_adapter_cls=DockerComposeAdapter,
     )
     target_url = _env_url(cfg, target)

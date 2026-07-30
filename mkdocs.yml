@@ -60,6 +60,7 @@ nav:
       - Web UI: web-ui.md
       - API: api.md
       - Runner architecture: runner-architecture.md
+      - Kubernetes runtime: kubernetes.md
       - Domains & SSL: domains-ssl.md
       - Catalog: catalog.md
   - Security:
