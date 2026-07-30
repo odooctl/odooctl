@@ -114,6 +114,12 @@ Our killer feature:
 9. `m14-domain-backup-ux.md` — domain/SSL, restore points, DR drills.
 10. `m15-migration-assistant.md` — upgrade rehearsal and OpenUpgrade hooks.
 
+## Post-v1 program
+
+- `reddit-enhancements.md` — native Odoo neutralization, snapshot DR,
+  scheduled off-site backup verification, PITR, object filestores,
+  Kubernetes/GitOps runtimes, progressive delivery, and k3d/Tilt simulation.
+
 ## Verification standard
 
 For each milestone:
