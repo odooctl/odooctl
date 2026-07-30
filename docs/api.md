@@ -94,7 +94,7 @@ Token payload fields:
 
 | Role       | Allowed operations                                          |
 |------------|-------------------------------------------------------------|
-| `viewer`   | Read-only: projects, environments, status, backups, audit   |
+| `viewer`   | Read-only: projects, environments, status, backup/snapshot manifests, audit |
 | `operator` | Viewer + backup, deploy, clone, restore                     |
 | `admin`    | Operator + promote, env management, secrets                 |
 | `owner`    | All actions including protected-environment destructive ops |
@@ -110,6 +110,9 @@ Token payload fields:
 | GET    | `/projects/{project}/environments`      | viewer        | List environments from config      |
 | GET    | `/projects/{project}/status`            | viewer        | Metadata-derived status            |
 | GET    | `/projects/{project}/backups`           | viewer        | List backup manifests              |
+| GET    | `/projects/{project}/snapshots`         | viewer        | List local snapshot manifests      |
+| GET    | `/projects/{project}/snapshots/{id}`    | viewer        | Read one snapshot and exact IDs    |
+| GET    | `/projects/{project}/restore-points`    | viewer        | List portable restore points       |
 | GET    | `/projects/{project}/audit`             | viewer        | Read audit trail entries           |
 
 **Status note**: `GET /projects/{project}/status` returns metadata-store-derived
@@ -153,6 +156,9 @@ design:
 | `backup`            | yes                 | yes                |                                                |
 | `clone`             | yes                 | yes                | `params.source` defaults to `production`       |
 | `dr_drill`          | yes                 | yes                |                                                |
+| `snapshot_create`   | yes                 | yes                | uses the config-bound snapshot environment     |
+| `snapshot_reconcile`| yes                 | yes                | requires `params.snapshot_id`                  |
+| `snapshot_restore`  | yes                 | yes                | plan-only unless `params.execute` is `true`    |
 | `migrate_rehearsal` | yes                 | yes                | requires `params.to` (target version)          |
 | `restore`           | yes                 | no — CLI only      | run `odooctl restore` on the host              |
 | `deploy`            | yes                 | no — CLI only      | run `odooctl deploy` on the host               |
@@ -183,6 +189,84 @@ Response (202 Accepted):
   "created_at": "2026-05-30T12:00:00+00:00"
 }
 ```
+
+### Snapshot operations
+
+All three snapshot operation kinds require `environment` to equal
+`snapshots.environment`. That setting binds one project environment to one
+provider source; the API rejects a different label before queueing, and the
+runner rechecks the environment while holding its lock. `snapshot_create` and
+`snapshot_reconcile` use backup-class RBAC. `snapshot_restore` uses
+restore-class RBAC, so a protected bound environment requires an `admin` or
+`owner`.
+
+| Kind | `params` | Result |
+|------|----------|--------|
+| `snapshot_create` | `{}` | Requests a provider snapshot and emits its manifest ID/status. |
+| `snapshot_reconcile` | `{"snapshot_id": "..."}` | Refreshes a requested/pending manifest without creating a new snapshot. |
+| `snapshot_restore` | `{"snapshot_id": "...", "execute": false}` | Generates and emits a local recovery plan; no provider command or credentials are required. |
+| `snapshot_restore` | `{"snapshot_id": "...", "execute": true, "confirm_snapshot": "...", "confirm_resource": "..."}` | Executes only when both confirmations exactly match the stored identities. |
+
+Use a plan-then-execute workflow:
+
+1. Read the local manifest and exact confirmation identities:
+
+   ```http
+   GET /projects/my-project/snapshots?environment=production
+   GET /projects/my-project/snapshots/production-20260730T120000Z-deadbeef
+   ```
+
+   The detail response includes `snapshot_id`, `source_resource_id`, provider
+   resource IDs, consistency, and status. Listing and detail reads do not call
+   the provider.
+
+2. Queue a plan-only restore:
+
+   ```json
+   {
+     "kind": "snapshot_restore",
+     "environment": "production",
+     "params": {
+       "snapshot_id": "production-20260730T120000Z-deadbeef",
+       "execute": false
+     }
+   }
+   ```
+
+3. Stream `GET /operations/{op_id}/events` and inspect the
+   `snapshot_restore` event. Its `data` includes the canonical
+   `source_resource_id`, `status`, `message`, restored IDs (if any), and a
+   structured `plan` containing `provider`, `commands`, `destructive`, and
+   `notes`. Planning reads local state only, which allows review even when AWS
+   or Hetzner credentials are unavailable.
+
+4. Queue a second operation only after reviewing that event:
+
+   ```json
+   {
+     "kind": "snapshot_restore",
+     "environment": "production",
+     "params": {
+       "snapshot_id": "production-20260730T120000Z-deadbeef",
+       "execute": true,
+       "confirm_snapshot": "production-20260730T120000Z-deadbeef",
+       "confirm_resource": "i-0123456789abcdef0"
+     }
+   }
+   ```
+
+   `execute` must be a JSON boolean; strings such as `"false"` are rejected by
+   the runner. Both confirmation values must match exactly. Execution requires
+   the provider CLI and credentials documented in
+   [Disaster recovery](disaster-recovery.md).
+
+A successfully handled provider request can still report `pending`. For
+snapshot creation, queue `snapshot_reconcile` for the same manifest before
+considering another create. For recovery, the result event and restore metadata
+retain every created resource ID; retrying the same typed execution uses
+provider idempotency markers to discover that recovery set. Provider snapshots
+and recovery resources are not deleted or retained by the API and can remain
+billable.
 
 #### GET /operations/{id}/events
 

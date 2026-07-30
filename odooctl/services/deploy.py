@@ -66,19 +66,62 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
     )
     compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
     backup_id = None
+    snapshot_id = None
+    snapshot_status = None
+    snapshot_warning = None
     status = "failed"
     message = None
     db_mutation_possible = False
+    service_mutation_possible = False
     try:
         if cfg.is_protected(environment):
             print("[deploy] backup")
             backup_result = backup_execute(ctx, environment)
             backup_id = backup_result.backup_id
+            if (
+                cfg.snapshots.pre_deploy != "disabled"
+                and environment == cfg.snapshots.environment
+            ):
+                print("[deploy] snapshot")
+                try:
+                    from odooctl.services.snapshots import run_snapshot_create
+
+                    snapshot = run_snapshot_create(
+                        ctx,
+                        environment,
+                        trigger="pre_deploy",
+                        portable_backup_id=backup_id,
+                    )
+                    snapshot_id = snapshot.snapshot_id
+                    snapshot_status = snapshot.status
+                    if snapshot.status != "complete":
+                        snapshot_warning = (
+                            f"pre-deploy snapshot {snapshot.snapshot_id} is "
+                            f"{snapshot.status}; reconcile it before relying on it"
+                        )
+                        if cfg.snapshots.pre_deploy == "required":
+                            raise RuntimeError(snapshot_warning)
+                        print(f"[deploy] warning: {snapshot_warning}")
+                except Exception as snapshot_exc:
+                    failed_manifest = getattr(snapshot_exc, "manifest", None)
+                    if failed_manifest is not None:
+                        snapshot_id = failed_manifest.snapshot_id
+                        snapshot_status = failed_manifest.status
+                    if snapshot_status is None:
+                        snapshot_status = "failed"
+                    if snapshot_warning is None:
+                        snapshot_warning = (
+                            f"pre-deploy snapshot failed: {snapshot_exc}"
+                        )
+                    if cfg.snapshots.pre_deploy == "required":
+                        raise RuntimeError(snapshot_warning) from snapshot_exc
+                    print(f"[deploy] warning: {snapshot_warning}")
         print("[deploy] rollout")
         run(["git", "fetch", "--all"], stream=True, cwd=str(ctx.project.root))
         run(["git", "checkout", selected_branch], stream=True, cwd=str(ctx.project.root))
         run(["git", "pull", "--ff-only"], stream=True, cwd=str(ctx.project.root))
         compose.pull(cfg.odoo.service)
+        service_mutation_possible = True
         compose.up(cfg.odoo.service)
         db_mutation_possible = True
         update_modules_compose(
@@ -100,9 +143,13 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
             interval=cfg.healthcheck.interval_seconds,
         )
         status = "success"
+        if snapshot_warning:
+            message = snapshot_warning
         print("[deploy] done")
     except Exception as exc:
         message = str(exc)
+        if snapshot_warning and snapshot_warning not in message:
+            message = f"{snapshot_warning}; {message}"
         if cfg.is_protected(environment):
             recovery_notes = []
             if backup_id is not None and db_mutation_possible:
@@ -116,10 +163,13 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
                         f"pre-deploy backup restore FAILED ({restore_exc}); "
                         f"restore manually from backup {backup_id}"
                     )
-            try:
-                compose.restart(cfg.odoo.service)
-            except Exception as recovery_exc:
-                recovery_notes.append(f"recovery restart failed: {recovery_exc}")
+            if service_mutation_possible:
+                try:
+                    compose.restart(cfg.odoo.service)
+                except Exception as recovery_exc:
+                    recovery_notes.append(
+                        f"recovery restart failed: {recovery_exc}"
+                    )
             if recovery_notes:
                 message = f"{message}; " + "; ".join(recovery_notes)
         raise
@@ -132,10 +182,17 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
                 commit=git_commit(ctx.project.root),
                 docker_image=cfg.odoo.image,
                 backup=backup_id,
+                snapshot=snapshot_id,
+                snapshot_status=snapshot_status,
                 modules_updated=env.update_modules,
                 status=status,
                 health_check_url=url,
                 message=message,
             )
         )
-    return DeployResult(environment=environment, backup_id=backup_id, status=status)
+    return DeployResult(
+        environment=environment,
+        backup_id=backup_id,
+        snapshot_id=snapshot_id,
+        status=status,
+    )

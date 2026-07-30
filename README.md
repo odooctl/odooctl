@@ -74,12 +74,18 @@ odooctl status
 | Environment promotion | `odooctl promote` | [docs/environments.md](docs/environments.md) |
 | Preflight checks | `odooctl doctor` | [docs/doctor.md](docs/doctor.md) |
 | Upgrade rehearsal (17 → 18 → 19) | `odooctl migrate matrix / scan / rehearse` | [docs/migration.md](docs/migration.md) |
-| Disaster-recovery drills | `odooctl dr drill` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
+| Disaster recovery and provider snapshots | `odooctl dr drill`, `odooctl dr snapshot` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
 | Stack / addon catalog | `odooctl catalog`, `odooctl setup` | [docs/catalog.md](docs/catalog.md) |
 | Scheduled backups / checks | `odooctl schedule` | [docs/getting-started.md](docs/getting-started.md) |
+
+Provider snapshots are deliberately coarse DR artifacts: one provider source is
+bound to one environment, recovery is plan-only by default, and execution
+creates isolated resources only after exact snapshot/source confirmation. They
+supplement rather than replace portable database + filestore backups; see the
+[lifecycle and cost notes](docs/disaster-recovery.md#provider-snapshots).
 
 ## Web UI
 

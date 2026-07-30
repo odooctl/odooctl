@@ -77,6 +77,7 @@ class DeployResult:
     environment: str
     status: str
     backup_id: str | None = None
+    snapshot_id: str | None = None
 
 
 @dataclass

@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from odooctl.commands import deploy as deploy_cmd
+from odooctl.metadata.models import SnapshotManifest
 from odooctl.services import deploy as deploy_svc
 from odooctl.services.models import BackupResult
+from odooctl.services.snapshots import SnapshotCreateFailed
 
 
 class DummyStore:
@@ -487,3 +489,337 @@ def test_deploy_failure_before_rollout_does_not_touch_database(tmp_path: Path, m
     # Failure before any module update: DB untouched, no restore attempted.
     assert restores == []
     assert "registry unreachable" in store.saved[-1].message
+
+
+def test_required_pre_deploy_snapshot_runs_after_portable_backup(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: required
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+    monkeypatch.setattr(
+        "odooctl.services.snapshots.run_snapshot_create",
+        lambda ctx, environment, **kwargs: (
+            events.append(
+                (
+                    "snapshot",
+                    (environment, kwargs["portable_backup_id"]),
+                )
+            )
+            or SimpleNamespace(
+                snapshot_id="production-snapshot-1",
+                status="complete",
+            )
+        ),
+    )
+
+    deploy_cmd.execute("production", "main", str(config))
+
+    assert events[0] == ("backup", ("production",))
+    assert events[1] == (
+        "snapshot",
+        ("production", "backup_2026"),
+    )
+    assert events[2][0] == "run"
+    assert store.saved[-1].snapshot == "production-snapshot-1"
+    assert store.saved[-1].snapshot_status == "complete"
+
+
+def test_required_pre_deploy_snapshot_pending_stops_before_rollout(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: required
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+    monkeypatch.setattr(
+        "odooctl.services.snapshots.run_snapshot_create",
+        lambda *args, **kwargs: SimpleNamespace(
+            snapshot_id="production-snapshot-pending",
+            status="pending",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="is pending"):
+        deploy_cmd.execute("production", "main", str(config))
+
+    assert events == [("backup", ("production",))]
+    assert not any(call[0] in {"pull", "up"} for call in compose.calls)
+    assert not any(call[0] == "restart" for call in compose.calls)
+    assert store.saved[-1].snapshot == "production-snapshot-pending"
+    assert store.saved[-1].snapshot_status == "pending"
+
+
+def test_required_pre_deploy_snapshot_failure_stops_before_rollout(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: required
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+    monkeypatch.setattr(
+        "odooctl.services.snapshots.run_snapshot_create",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("provider unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="pre-deploy snapshot failed"):
+        deploy_cmd.execute("production", "main", str(config))
+
+    assert events == [("backup", ("production",))]
+    assert not any(call[0] in {"pull", "up"} for call in compose.calls)
+    assert not any(call[0] == "restart" for call in compose.calls)
+    assert store.saved[-1].backup == "backup_2026"
+    assert store.saved[-1].snapshot is None
+    assert store.saved[-1].snapshot_status == "failed"
+
+
+def test_preferred_pre_deploy_snapshot_failure_is_recorded_but_deploy_continues(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: preferred
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+    monkeypatch.delenv("HCLOUD_TOKEN", raising=False)
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+
+    deploy_cmd.execute("production", "main", str(config))
+
+    assert store.saved[-1].status == "success"
+    assert store.saved[-1].snapshot_status == "failed"
+    assert "Missing snapshot provider environment variables" in (
+        store.saved[-1].message
+    )
+
+
+def test_preferred_pre_deploy_pending_snapshot_is_recorded_and_deploy_continues(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: preferred
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+    monkeypatch.setattr(
+        "odooctl.services.snapshots.run_snapshot_create",
+        lambda *args, **kwargs: SimpleNamespace(
+            snapshot_id="production-snapshot-pending",
+            status="pending",
+        ),
+    )
+
+    deploy_cmd.execute("production", "main", str(config))
+
+    assert store.saved[-1].status == "success"
+    assert store.saved[-1].snapshot == "production-snapshot-pending"
+    assert store.saved[-1].snapshot_status == "pending"
+    assert "reconcile it before relying on it" in store.saved[-1].message
+
+
+def test_pre_deploy_snapshot_failure_preserves_manifest_correlation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        CONFIG.replace(
+            "/srv/filestore/prod",
+            str(tmp_path / "srv/filestore/prod"),
+        )
+        + """
+snapshots:
+  provider: hetzner_cloud
+  pre_deploy: preferred
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/prod").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+    failed_manifest = SnapshotManifest(
+        snapshot_id="production-snapshot-ambiguous",
+        project="demo",
+        environment="production",
+        provider="hetzner_cloud",
+        source_resource_id="odoo-prod",
+        status="pending",
+        last_error="provider response was lost",
+    )
+    failure = SnapshotCreateFailed(
+        failed_manifest,
+        RuntimeError("provider response was lost"),
+    )
+    monkeypatch.setattr(
+        "odooctl.services.snapshots.run_snapshot_create",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    deploy_cmd.execute("production", "main", str(config))
+
+    assert store.saved[-1].status == "success"
+    assert store.saved[-1].snapshot == "production-snapshot-ambiguous"
+    assert store.saved[-1].snapshot_status == "pending"
+    assert "provider response was lost" in store.saved[-1].message
+
+
+def test_pre_deploy_snapshot_only_applies_to_bound_protected_environment(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = tmp_path / "odooctl.yml"
+    staging_config = CONFIG.replace(
+        "  staging:\n    branch: staging",
+        "  staging:\n    branch: staging\n    protected: true",
+    ).replace(
+        "/srv/filestore/staging",
+        str(tmp_path / "srv/filestore/staging"),
+    )
+    config.write_text(
+        staging_config
+        + """
+snapshots:
+  provider: hetzner_cloud
+  environment: production
+  pre_deploy: required
+  hetzner_cloud:
+    server: odoo-prod
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+"""
+    )
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    (tmp_path / "srv/filestore/staging").mkdir(parents=True)
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    events: list[tuple[str, tuple[object, ...]]] = []
+    store = DummyStore()
+    compose = DummyCompose("docker-compose.yml")
+    _patch_happy_deploy(monkeypatch, events, store, compose)
+
+    deploy_cmd.execute("staging", "staging", str(config))
+
+    assert events[0] == ("backup", ("staging",))
+    assert not any(event[0] == "snapshot" for event in events)
+    assert store.saved[-1].status == "success"
+    assert store.saved[-1].snapshot is None

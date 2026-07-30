@@ -19,6 +19,8 @@ Key sections:
 - `odoo`: image, native CLI command, config path, addons paths, service name,
   DB flags for module updates, and container filestore root.
 - `backups`: local backup path, optional S3 remote storage, and retention policy.
+- `snapshots`: optional AWS EBS or Hetzner Cloud coarse-DR provider and
+  protected pre-deploy policy.
 - `sanitization`: native Odoo neutralization policy, SQL extension files, and
   built-in staging safety toggles.
 - `healthcheck`: path and retry timing used after clone/deploy/restore operations.
@@ -113,6 +115,72 @@ backups:
 ```
 
 If `boto3` or credentials are unavailable, `odooctl` warns and mirrors the remote backup under `.odooctl/remote-backups/` so backup creation does not fail because remote upload is unavailable.
+
+## VM and volume snapshots
+
+Snapshots are separate from portable database + filestore backups. Leave the
+provider disabled when the project has no supported infrastructure provider:
+
+```yaml
+snapshots:
+  provider: none
+  pre_deploy: disabled
+```
+
+AWS EBS mode snapshots all attached instance volumes as one crash-consistent
+set and restores to new, unattached volumes:
+
+```yaml
+snapshots:
+  provider: aws_ebs
+  environment: production
+  pre_deploy: required
+  aws_ebs:
+    instance_id: i-0123456789abcdef0
+    region: eu-central-1
+    recovery_availability_zone: eu-central-1a
+    include_root_volume: true
+    completion_timeout_seconds: 600
+    poll_interval_seconds: 15
+```
+
+Hetzner Cloud mode snapshots the server root disk. It refuses servers with
+attached Hetzner Volumes because those would not be included:
+
+```yaml
+snapshots:
+  provider: hetzner_cloud
+  environment: production
+  pre_deploy: preferred
+  hetzner_cloud:
+    server: odoo-production
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+    token_env: HCLOUD_TOKEN
+```
+
+`environment` is a security boundary, not a descriptive label. One snapshot
+provider configuration is bound to one declared environment and its one
+infrastructure source (`instance_id` or `server`). Snapshot create, reconcile,
+and restore operations must use that exact environment. If `pre_deploy` is
+enabled, the bound environment must also be protected. Other protected
+environments still receive their portable pre-deploy backup, but do not use
+this provider snapshot configuration; use a separate project/configuration
+when infrastructure sources need independent snapshot policies.
+
+`pre_deploy` accepts `disabled`, `preferred`, or `required`. Provider commands
+use the installed AWS or hcloud CLI. Credentials stay in the standard AWS CLI
+credential chain, the selected hcloud context, or the configured Hetzner token
+environment variable. `recovery_network` must name an existing private Hetzner
+network: recovery servers are attached to it, created powered off, and given no
+public IPv4 or IPv6 address.
+
+See [Disaster recovery](disaster-recovery.md) for required provider
+permissions, recovery behavior, lifecycle costs, and typed confirmation. The
+AWS zone is the destination for isolated recovery volumes; the source zone is
+discovered and recorded in each snapshot manifest. The legacy key
+`availability_zone` remains accepted as an input alias.
 
 ## Redaction policy
 

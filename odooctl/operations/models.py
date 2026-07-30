@@ -19,6 +19,9 @@ class OperationKind(str, Enum):
     ROLLBACK = "rollback"
     PROMOTE = "promote"
     DR_DRILL = "dr_drill"
+    SNAPSHOT_CREATE = "snapshot_create"
+    SNAPSHOT_RECONCILE = "snapshot_reconcile"
+    SNAPSHOT_RESTORE = "snapshot_restore"
     MIGRATE_REHEARSAL = "migrate_rehearsal"
 
 

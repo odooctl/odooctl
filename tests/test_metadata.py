@@ -1,4 +1,12 @@
-from odooctl.metadata.models import BackupManifest, DeploymentMetadata
+import pytest
+
+from odooctl.metadata.models import (
+    BackupManifest,
+    DeploymentMetadata,
+    SnapshotManifest,
+    SnapshotResource,
+    SnapshotRestoreMetadata,
+)
 from odooctl.metadata.store import MetadataStore
 
 
@@ -36,6 +44,78 @@ def test_metadata_store_writes_latest_files(tmp_path):
     dep = DeploymentMetadata(project="p", environment="staging", branch="staging", status="success")
     store.save_deployment(dep)
     assert store.latest_deployment("staging")["status"] == "success"
+
+
+def test_snapshot_manifest_uses_its_own_index_and_round_trips(tmp_path):
+    store = MetadataStore(tmp_path / ".odooctl")
+    manifest = SnapshotManifest(
+        snapshot_id="production-20260730-deadbeef",
+        project="p",
+        environment="production",
+        provider="aws_ebs",
+        source_resource_id="i-0123456789abcdef0",
+        resources=[
+            SnapshotResource(
+                snapshot_resource_id="snap-123",
+                source_resource_id="vol-123",
+                kind="ebs_volume",
+                state="completed",
+                location="us-east-1a",
+            )
+        ],
+        scope=["ec2_instance_all_attached_ebs_volumes"],
+        consistency="crash_consistent",
+    )
+
+    path = store.save_snapshot_manifest(manifest)
+
+    assert path.parent.name == "snapshots"
+    assert store.get_snapshot(manifest.snapshot_id) == manifest
+    assert store.list_snapshots("production") == [manifest]
+    assert not (tmp_path / ".odooctl" / "backups" / path.name).exists()
+
+
+def test_snapshot_store_rejects_filename_payload_identity_mismatch(tmp_path):
+    store = MetadataStore(tmp_path / ".odooctl")
+    manifest = SnapshotManifest(
+        snapshot_id="bar",
+        project="p",
+        environment="production",
+        provider="aws_ebs",
+        source_resource_id="i-123",
+    )
+    swapped = tmp_path / ".odooctl" / "snapshots" / "foo.json"
+    swapped.write_text(manifest.model_dump_json())
+
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        store.get_snapshot("foo")
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        store.list_snapshots()
+
+
+def test_snapshot_store_rejects_unsafe_filename_components(tmp_path):
+    store = MetadataStore(tmp_path / ".odooctl")
+    manifest = SnapshotManifest(
+        snapshot_id="safe-id",
+        project="p",
+        environment="../production",
+        provider="aws_ebs",
+        source_resource_id="i-123",
+    )
+    with pytest.raises(ValueError, match="environment"):
+        store.save_snapshot_manifest(manifest)
+
+    restore = SnapshotRestoreMetadata(
+        snapshot_id="../unsafe",
+        project="p",
+        environment="production",
+        provider="aws_ebs",
+        source_resource_id="i-123",
+        executed=True,
+        status="pending",
+    )
+    with pytest.raises(ValueError, match="snapshot_id"):
+        store.save_snapshot_restore(restore)
 
 
 def test_previous_successful_deployment_uses_success_before_current_failure(tmp_path):

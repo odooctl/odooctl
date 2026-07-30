@@ -11,7 +11,7 @@ def execute(config_path: str = "odooctl.yml") -> None:
     env_names = ", ".join(sorted(cfg.environments))
     success(f"Config valid: {cfg.project.name} ({env_names})")
 
-    missing = cfg.missing_env_vars()
+    missing = cfg.missing_env_vars(include_snapshot=True)
     if missing:
         warn("Missing referenced environment variables: " + ", ".join(missing))
     else:

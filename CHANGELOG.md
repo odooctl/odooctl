@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native `neutralize` command when available, followed by odooctl extension
   sanitizers and fail-closed verification. Policies support `required`,
   `preferred`, and `disabled`; results are recorded without secrets.
+- Provider-native DR snapshots for AWS EBS multi-volume sets and Hetzner
+  Cloud server disks, with a separate durable requested/pending/complete/failed
+  manifest index, one config-bound environment/source identity, canonical
+  provider scope and reconstruction metadata, explicit consistency labels,
+  reconciliation after interruption, bound protected-environment pre-deploy
+  policy, plan-only recovery by default, idempotent isolated recovery resources
+  (including private-network-only Hetzner servers), partial-resource tracking,
+  and exact snapshot/resource confirmation before execution.
 
 ## [0.2.0] - 2026-07-19
 

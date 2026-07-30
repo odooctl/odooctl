@@ -37,6 +37,9 @@ _KIND_ACTION: dict[str, Action] = {
     "update_modules": Action.DEPLOY,
     "rollback": Action.RESTORE,
     "dr_drill": Action.RESTORE,
+    "snapshot_create": Action.BACKUP,
+    "snapshot_reconcile": Action.BACKUP,
+    "snapshot_restore": Action.RESTORE,
     "migrate_rehearsal": Action.RESTORE,
 }
 
@@ -121,6 +124,21 @@ def enqueue_operation(
 
     enforce_project_scope(request, project)
     ctx = _load_ctx(request, project)
+
+    if (
+        body.kind
+        in {"snapshot_create", "snapshot_reconcile", "snapshot_restore"}
+        and ctx.config.snapshots.provider != "none"
+        and body.environment != ctx.config.snapshots.environment
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Snapshot provider is bound to environment "
+                f"{ctx.config.snapshots.environment!r}, not "
+                f"{body.environment!r}"
+            ),
+        )
 
     # Resolve the target environment before authorization so protected-env
     # policy is applied to the actual enqueue target.
