@@ -70,6 +70,10 @@ _KIND_ACTION: dict[str, rbac.Action] = {
     "snapshot_create": rbac.Action.BACKUP,
     "snapshot_reconcile": rbac.Action.BACKUP,
     "snapshot_restore": rbac.Action.RESTORE,
+    "pitr_base_create": rbac.Action.BACKUP,
+    "pitr_restore": rbac.Action.RESTORE,
+    "pitr_cutover": rbac.Action.RESTORE,
+    "pitr_reconcile": rbac.Action.BACKUP,
     "migrate_rehearsal": rbac.Action.RESTORE,
 }
 
@@ -479,6 +483,104 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
                     "destructive": result.plan.destructive,
                     "notes": list(result.plan.notes),
                 },
+            },
+        )
+
+    elif kind == OperationKind.PITR_BASE_CREATE.value:
+        from odooctl.services.pitr import create_base_backup
+
+        manifest = create_base_backup(svc_ctx, env)
+        op_ctx.emit(
+            f"PITR base complete: {manifest.base_backup_id}",
+            phase="pitr_base",
+            data={
+                "base_backup_id": manifest.base_backup_id,
+                "system_identifier": manifest.system_identifier,
+                "end_wal": manifest.end_wal,
+                "remote_uri": manifest.remote_uri,
+            },
+        )
+
+    elif kind == OperationKind.PITR_RECONCILE.value:
+        from odooctl.services.pitr import reconcile_retention
+
+        result = reconcile_retention(svc_ctx, env)
+        op_ctx.emit(
+            "PITR retention reconciliation complete",
+            phase="pitr_retention",
+            data={
+                "retained_base_backup_ids": list(
+                    result.retained_base_backup_ids
+                ),
+                "deleted_base_backup_ids": list(
+                    result.deleted_base_backup_ids
+                ),
+                "deleted_wal_filenames": list(
+                    result.deleted_wal_filenames
+                ),
+            },
+        )
+
+    elif kind == OperationKind.PITR_RESTORE.value:
+        from odooctl.services.pitr import execute_restore
+
+        plan_id = params.get("plan_id")
+        if not isinstance(plan_id, str) or not plan_id:
+            raise ValueError(
+                "pitr_restore requires a non-empty string 'plan_id'"
+            )
+        result = execute_restore(svc_ctx, env, plan_id)
+        op_ctx.emit(
+            f"PITR restore verified: {result.restore_id}",
+            phase="pitr_restore",
+            data={
+                "restore_id": result.restore_id,
+                "new_database": result.new_database,
+                "target_time": result.target_time,
+                "recovered_lsn": result.recovered_lsn,
+            },
+        )
+
+    elif kind == OperationKind.PITR_CUTOVER.value:
+        from odooctl.services.pitr import cutover_restore
+
+        restore_id = params.get("restore_id")
+        confirm_environment = params.get("confirm_environment")
+        confirm_database = params.get("confirm_database")
+        accept_database_only = params.get("accept_database_only")
+        if not isinstance(restore_id, str) or not restore_id:
+            raise ValueError(
+                "pitr_cutover requires a non-empty string 'restore_id'"
+            )
+        if not isinstance(confirm_environment, str):
+            raise ValueError(
+                "pitr_cutover requires string 'confirm_environment'"
+            )
+        if not isinstance(confirm_database, str):
+            raise ValueError(
+                "pitr_cutover requires string 'confirm_database'"
+            )
+        if not isinstance(accept_database_only, bool):
+            raise ValueError(
+                "pitr_cutover 'accept_database_only' must be a boolean"
+            )
+        result = cutover_restore(
+            svc_ctx,
+            env,
+            restore_id,
+            confirm_environment=confirm_environment,
+            confirm_database=confirm_database,
+            accept_database_only=accept_database_only,
+        )
+        op_ctx.emit(
+            f"PITR cutover complete: {result.restore_id}",
+            phase="pitr_cutover",
+            data={
+                "restore_id": result.restore_id,
+                "database": result.database,
+                "filestore_consistency": (
+                    result.filestore_consistency
+                ),
             },
         )
 

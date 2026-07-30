@@ -16,6 +16,23 @@ def _write_config(path: Path, *, project_name: str = "demo") -> None:
     )
 
 
+def _enable_pitr(path: Path) -> None:
+    with path.open("a") as handle:
+        handle.write(
+            """pitr:
+  enabled: true
+  environment: production
+  cluster_id: primary-cluster
+  system_identifier: "7429384729384729"
+  recovery_image: postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  filestore_policy: database_only
+  destination:
+    bucket: pitr-archive
+    prefix: demo/pitr
+"""
+        )
+
+
 def test_render_systemd_timer_for_backup(tmp_path: Path):
     config = tmp_path / "odooctl.yml"
     _write_config(config)
@@ -131,6 +148,60 @@ def test_render_dr_drill_timer_uses_nested_dr_command(tmp_path: Path):
     assert f"# /etc/systemd/system/{unit_name}.service" in output
     assert "dr drill production --config" in output
     assert "OnCalendar=weekly" in output
+
+
+def test_render_pitr_schedules_use_registered_non_destructive_commands(
+    tmp_path: Path,
+):
+    config = tmp_path / "odooctl.yml"
+    _write_config(config)
+    _enable_pitr(config)
+
+    base = build_spec("pitr-base", "production", str(config))
+    reconcile = build_spec(
+        "pitr-reconcile",
+        "production",
+        str(config),
+    )
+
+    assert base.invocation_tokens[-6:] == (
+        "pitr",
+        "base",
+        "create",
+        "production",
+        "--config",
+        str(config),
+    )
+    assert reconcile.invocation_tokens[-6:] == (
+        "pitr",
+        "retention",
+        "reconcile",
+        "production",
+        "--config",
+        str(config),
+    )
+    assert "restore" not in base.invocation_tokens
+    assert "restore" not in reconcile.invocation_tokens
+
+
+def test_pitr_schedule_requires_enabled_bound_environment(tmp_path: Path):
+    config = tmp_path / "odooctl.yml"
+    _write_config(config)
+
+    result = runner.invoke(
+        app,
+        [
+            "schedule",
+            "pitr-base",
+            "--env",
+            "production",
+            "--config",
+            str(config),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "pitr.enabled: true" in result.output
 
 
 def test_systemd_unit_namespace_is_stable_and_root_scoped(tmp_path: Path):

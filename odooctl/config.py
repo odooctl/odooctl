@@ -276,6 +276,201 @@ class BackupsConfig(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
+class WalArchiveS3Config(BaseModel):
+    """Independent S3-compatible destination for PostgreSQL WAL archives."""
+
+    type: Literal["s3"] = "s3"
+    bucket: str
+    region: str | None = None
+    prefix: str = ""
+    endpoint_env: str | None = None
+    access_key_env: str | None = None
+    secret_key_env: str | None = None
+    session_token_env: str | None = None
+    region_env: str | None = None
+    encryption_algorithm: Literal["AES256", "aws:kms"] | None = None
+    encryption_key_env: str | None = None
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(ch) < 32 for ch in normalized)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a non-empty S3 bucket name "
+                "without path separators"
+            )
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if "\\" in value or any(ord(ch) < 32 for ch in value):
+            raise ValueError(f"{info.field_name} must be a safe POSIX object-key prefix")
+        if normalized:
+            parts = PurePosixPath(normalized).parts
+            if value.startswith("/") or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    f"{info.field_name} must be relative and must not contain "
+                    "'.' or '..' segments"
+                )
+        return normalized
+
+    @field_validator(
+        "endpoint_env",
+        "access_key_env",
+        "secret_key_env",
+        "session_token_env",
+        "region_env",
+        "encryption_key_env",
+    )
+    @classmethod
+    def env_references_must_be_names(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def credentials_and_encryption_must_be_complete(self) -> "WalArchiveS3Config":
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "WAL archive access_key_env and secret_key_env must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "WAL archive session_token_env requires access_key_env and secret_key_env"
+            )
+        if self.encryption_key_env and self.encryption_algorithm != "aws:kms":
+            raise ValueError(
+                "WAL archive encryption_key_env requires encryption_algorithm 'aws:kms'"
+            )
+        return self
+
+
+class PitrRetentionConfig(BaseModel):
+    """Retention floor for recoverable physical backups and their WAL graph."""
+
+    base_backups: int = Field(default=2, ge=0)
+    grace_hours: int = Field(default=24, ge=0)
+
+
+class PitrConfig(BaseModel):
+    """PostgreSQL physical backup/PITR settings, disabled unless opted in."""
+
+    enabled: bool = False
+    environment: str = "production"
+    cluster_id: str | None = None
+    system_identifier: str | None = None
+    destination: WalArchiveS3Config | None = None
+    replication_user: str | None = None
+    replication_password_env: str | None = None
+    recovery_image: str | None = None
+    filestore_policy: Literal["database_only"] | None = None
+    retention: PitrRetentionConfig = Field(default_factory=PitrRetentionConfig)
+
+    @field_validator("environment", "cluster_id", "replication_user")
+    @classmethod
+    def identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, f"pitr.{info.field_name}")
+
+    @field_validator("system_identifier")
+    @classmethod
+    def system_identifier_must_be_decimal(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[1-9][0-9]{0,19}", value):
+            raise ValueError(
+                f"{info.field_name} must be a decimal PostgreSQL system identifier"
+            )
+        return value
+
+    @field_validator("replication_password_env")
+    @classmethod
+    def replication_password_must_be_an_env_name(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @field_validator("recovery_image")
+    @classmethod
+    def recovery_image_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 512
+            or any(ch.isspace() or ord(ch) < 32 for ch in normalized)
+            or not re.fullmatch(
+                r"(?:[^@\s]+@)?sha256:[0-9a-fA-F]{64}",
+                normalized,
+            )
+        ):
+            raise ValueError(
+                f"{info.field_name} must be an immutable sha256 image reference"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def enabled_pitr_must_be_explicit(self) -> "PitrConfig":
+        if not self.enabled:
+            return self
+        if not self.cluster_id:
+            raise ValueError("pitr.cluster_id is required when PITR is enabled")
+        if self.destination is None:
+            raise ValueError("pitr.destination is required when PITR is enabled")
+        if self.system_identifier is None:
+            raise ValueError(
+                "pitr.system_identifier is required when PITR is enabled "
+                "so a fresh recovery host can locate the archive"
+            )
+        if self.recovery_image is None:
+            raise ValueError(
+                "pitr.recovery_image is required when PITR is enabled"
+            )
+        if self.filestore_policy != "database_only":
+            raise ValueError(
+                "pitr.filestore_policy must explicitly be 'database_only' "
+                "when PITR is enabled"
+            )
+        if self.retention.base_backups < 1:
+            raise ValueError(
+                "pitr.retention.base_backups must be at least 1 when PITR is enabled"
+            )
+        return self
+
+
 def _validate_executable(value: str, field_name: str) -> str:
     if not value or not value.strip() or any(ch.isspace() for ch in value):
         raise ValueError(f"{field_name} must be one executable path without whitespace")
@@ -447,6 +642,7 @@ class OdooCtlConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     odoo: OdooConfig
     backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    pitr: PitrConfig = Field(default_factory=PitrConfig)
     snapshots: SnapshotsConfig = Field(default_factory=SnapshotsConfig)
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
@@ -474,6 +670,13 @@ class OdooCtlConfig(BaseModel):
         seen_filestores: dict[str, str] = {}
         seen_domains: dict[str, str] = {}
         seen_branches: dict[str, str] = {}
+
+        if self.pitr.enabled and self.pitr.environment not in self.environments:
+            known = ", ".join(sorted(self.environments))
+            raise ValueError(
+                f"pitr.environment {self.pitr.environment!r} is not defined. "
+                f"Known: {known}"
+            )
 
         if (
             self.snapshots.provider != "none"
@@ -608,6 +811,20 @@ class OdooCtlConfig(BaseModel):
             ):
                 if value:
                     refs.add(value)
+        if self.pitr.enabled:
+            if self.pitr.replication_password_env:
+                refs.add(self.pitr.replication_password_env)
+            assert self.pitr.destination is not None
+            for value in (
+                self.pitr.destination.endpoint_env,
+                self.pitr.destination.access_key_env,
+                self.pitr.destination.secret_key_env,
+                self.pitr.destination.session_token_env,
+                self.pitr.destination.region_env,
+                self.pitr.destination.encryption_key_env,
+            ):
+                if value:
+                    refs.add(value)
         if (
             include_snapshot
             and
@@ -689,6 +906,10 @@ backups:
     secret_key_env: ODOO_S3_SECRET_KEY
     region: eu-central-1
     prefix: demo-odoo
+
+pitr:
+  enabled: false
+  environment: production
 
 snapshots:
   provider: none

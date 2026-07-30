@@ -13,6 +13,8 @@ SCHEDULE_COMMANDS = (
     "backup-remote-verify",
     "dr-drill",
     "doctor",
+    "pitr-base",
+    "pitr-reconcile",
 )
 
 _UNSAFE_UNIT_COMPONENT = re.compile(r"[^A-Za-z0-9_-]+")
@@ -68,6 +70,20 @@ class ScheduleSpec:
         elif self.command == "doctor":
             # `doctor` is project-wide and does not accept an environment.
             command_tokens = ("doctor",)
+        elif self.command == "pitr-base":
+            command_tokens = (
+                "pitr",
+                "base",
+                "create",
+                self.environment,
+            )
+        elif self.command == "pitr-reconcile":
+            command_tokens = (
+                "pitr",
+                "retention",
+                "reconcile",
+                self.environment,
+            )
         else:  # pragma: no cover - build_spec validates public construction
             raise ValueError(f"Unsupported schedule command: {self.command}")
         return (
@@ -101,6 +117,14 @@ def build_spec(
         raise ValueError("schedule command must be one of: " + ", ".join(SCHEDULE_COMMANDS))
     if environment not in cfg.environments:
         raise ValueError(f"Unknown environment: {environment}")
+    if command.startswith("pitr-"):
+        if not cfg.pitr.enabled:
+            raise ValueError("PITR scheduling requires pitr.enabled: true")
+        if environment != cfg.pitr.environment:
+            raise ValueError(
+                "PITR is bound to environment "
+                f"{cfg.pitr.environment!r}, not {environment!r}"
+            )
     resolved_environment_file = None
     if environment_file is not None:
         candidate = Path(environment_file).expanduser()

@@ -31,14 +31,40 @@ class PostgresAdapter:
 
     def restore(self, db_name: str, dump_path: str | Path) -> None:
         self.drop_create(db_name)
+        self.restore_into(db_name, dump_path)
+
+    def create(self, db_name: str) -> None:
+        run(["createdb", *self.base_args(), db_name], env=self.env(), stream=True)
+
+    def restore_into(self, db_name: str, dump_path: str | Path) -> None:
         run(["pg_restore", *self.base_args(), "-d", db_name, str(dump_path)], env=self.env(), stream=True)
 
     def drop_create(self, db_name: str) -> None:
         run(["dropdb", *self.base_args(), db_name, "--if-exists"], env=self.env(), stream=True)
-        run(["createdb", *self.base_args(), db_name], env=self.env(), stream=True)
+        self.create(db_name)
 
     def psql_file(self, db_name: str, sql_file: str | Path) -> None:
         run(["psql", *self.base_args(), "-d", db_name, "-v", "ON_ERROR_STOP=1", "-f", str(sql_file)], env=self.env(), stream=True)
 
     def psql(self, db_name: str, sql: str) -> None:
         run(["psql", *self.base_args(), "-d", db_name, "-v", "ON_ERROR_STOP=1", "-c", sql], env=self.env(), stream=True)
+
+    def psql_scalar(self, db_name: str, sql: str) -> str | None:
+        result = run(
+            [
+                "psql",
+                *self.base_args(),
+                "-d",
+                db_name,
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                sql,
+            ],
+            env=self.env(),
+        )
+        value = result.stdout.strip()
+        return value or None

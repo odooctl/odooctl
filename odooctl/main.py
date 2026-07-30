@@ -22,6 +22,7 @@ from odooctl.commands import (
     logs as logs_cmd,
     migrate as migrate_cmd,
     ops as ops_cmd,
+    pitr as pitr_cmd,
     project as project_cmd,
     promote as promote_cmd,
     restore as restore_cmd,
@@ -47,6 +48,7 @@ app.add_typer(catalog_cmd.app, name="catalog")
 app.add_typer(security_cmd.app, name="security")
 app.add_typer(domain_cmd.app, name="domain")
 app.add_typer(dr_cmd.app, name="dr")
+app.add_typer(pitr_cmd.app, name="pitr")
 app.add_typer(migrate_cmd.app, name="migrate")
 app.add_typer(backup_remote_cmd.app, name="backup-remote")
 
@@ -198,7 +200,10 @@ def schedule(
     ctx: typer.Context,
     command: str = typer.Argument(
         ...,
-        help="Schedule: backup, backup-remote-verify, dr-drill, or doctor.",
+        help=(
+            "Schedule: backup, backup-remote-verify, dr-drill, doctor, "
+            "pitr-base, or pitr-reconcile."
+        ),
     ),
     environment: str = typer.Option(..., "--env", "--environment", help="Environment to target."),
     format: str = typer.Option("systemd", "--format", "-f", help="Output format: systemd or cron."),

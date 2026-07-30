@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy, plan-only recovery by default, idempotent isolated recovery resources
   (including private-network-only Hetzner servers), partial-resource tracking,
   and exact snapshot/resource confirmation before execution.
+- PostgreSQL WAL archiving and point-in-time recovery with an independent
+  S3-compatible archive, immutable WAL receipts, verified physical base
+  backups, recovery-graph retention, isolated digest-pinned recovery,
+  restore-to-new-database verification, crash-reconcilable OID-fenced cutover,
+  and compare-and-swap cross-host leases with explicit expired-lease recovery.
 
 ### Security
 

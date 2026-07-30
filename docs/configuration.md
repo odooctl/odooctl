@@ -20,6 +20,8 @@ Key sections:
   DB flags for module updates, and container filestore root.
 - `backups`: local backup path, UTC GFS retention, and policy-controlled S3
   remote storage.
+- `pitr`: opt-in PostgreSQL physical base backups, independent WAL archive,
+  isolated recovery, and recovery-graph retention.
 - `snapshots`: optional AWS EBS or Hetzner Cloud coarse-DR provider and
   protected pre-deploy policy.
 - `sanitization`: native Odoo neutralization policy, SQL extension files, and
@@ -158,10 +160,41 @@ concurrent hosts cannot prune each other's just-published restore points.
 See [Backup and restore](backup-restore.md#remote-s3-copies) for object
 publication ordering, remote inspection/download commands, and scheduling.
 
+## PostgreSQL WAL archiving and PITR
+
+PITR is disabled by default and requires an independent S3-compatible
+destination, an explicit PostgreSQL system identifier, a digest-pinned recovery
+image, and acknowledgement that the filestore is not included:
+
+```yaml
+pitr:
+  enabled: true
+  environment: production
+  cluster_id: primary-eu-1
+  system_identifier: "7623400000000000001"
+  recovery_image: postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  filestore_policy: database_only
+  retention:
+    base_backups: 2
+    grace_hours: 24
+  destination:
+    type: s3
+    bucket: acme-postgres-pitr
+    prefix: production
+    endpoint_env: ODOO_PITR_S3_ENDPOINT
+    access_key_env: ODOO_PITR_S3_ACCESS_KEY
+    secret_key_env: ODOO_PITR_S3_SECRET_KEY
+```
+
+See [PostgreSQL WAL archiving and PITR](pitr.md) for server prerequisites,
+archive-command installation, recovery/cutover safety, retention, and expired
+coordination-lease recovery.
+
 ## Schedule environment files
 
 The schedule generator supports `backup`, `backup-remote-verify`, `dr-drill`,
-and `doctor`. Provide credentials without embedding them in generated units:
+`pitr-base`, `pitr-reconcile`, and `doctor`. Provide credentials without
+embedding them in generated units:
 
 ```bash
 odooctl schedule backup-remote-verify --env production --interval daily \
