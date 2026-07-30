@@ -125,6 +125,7 @@ def configured_s3_secret_values(
         config.endpoint_env,
         config.access_key_env,
         config.secret_key_env,
+        config.session_token_env,
         config.region_env,
         config.encryption_key_env,
         *STANDARD_AWS_SECRET_ENVS,
@@ -263,7 +264,7 @@ class S3Adapter:
             )
         if not access_ref or not secret_ref:
             return {}
-        return {
+        credentials = {
             "aws_access_key_id": self._required_env(
                 access_ref,
                 "remote backup access key",
@@ -273,6 +274,12 @@ class S3Adapter:
                 "remote backup secret key",
             ),
         }
+        if self.config.session_token_env:
+            credentials["aws_session_token"] = self._required_env(
+                self.config.session_token_env,
+                "remote backup session token",
+            )
+        return credentials
 
     def _client(self) -> Any:
         if self._s3_client is not None:

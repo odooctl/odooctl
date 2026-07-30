@@ -48,6 +48,7 @@ nav:
       - Deployment: deployment.md
       - Backup & restore: backup-restore.md
       - PostgreSQL PITR: pitr.md
+      - Object-storage filestores: filestore-storage.md
       - Staging clones: staging-clone.md
       - Rollback: rollback.md
       - Environments: environments.md

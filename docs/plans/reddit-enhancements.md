@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: IN PROGRESS  
 Branch: `codex/reddit-enhancements`
 
-Implemented through: R4 (PostgreSQL WAL archiving and PITR)
+Implemented through: R5 (object-storage filestore)
 
 ## Why this program exists
 

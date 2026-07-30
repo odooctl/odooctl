@@ -87,6 +87,14 @@ host-level judgment — and the runner marks them `failed` at dispatch time
 | `backup`            | yes              | —                              |
 | `clone`             | yes              | —                              |
 | `dr_drill`          | yes              | —                              |
+| `snapshot_create`   | yes              | —                              |
+| `snapshot_reconcile`| yes              | —                              |
+| `snapshot_restore`  | yes              | —                              |
+| `pitr_base_create`  | yes              | —                              |
+| `pitr_reconcile`    | yes              | —                              |
+| `pitr_restore`      | yes              | —                              |
+| `pitr_cutover`      | yes              | —                              |
+| `filestore_migrate` | yes              | —                              |
 | `migrate_rehearsal` | yes              | —                              |
 | `restore`           | no (CLI-only)    | `odooctl restore`              |
 | `deploy`            | no (CLI-only)    | `odooctl deploy`               |

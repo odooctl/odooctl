@@ -527,6 +527,21 @@ pitr:
         )
 
 
+def _enable_filestore_migration(project_dir):
+    config = project_dir / "odooctl.yml"
+    text = config.read_text()
+    text = text.replace(
+        "    clone_from: production\n",
+        (
+            "    clone_from: production\n"
+            "    filestore_backend:\n"
+            "      type: posix_object_mount\n"
+            "      mount_path: ./filestore-object/staging\n"
+        ),
+    )
+    config.write_text(text)
+
+
 def test_pitr_api_rejects_disabled_or_wrong_environment(
     client,
     project_dir,
@@ -672,6 +687,91 @@ def test_pitr_api_rejects_unsafe_identity_before_queue(
     assert response.status_code == 400
     queue = project_dir / ".odooctl" / "queue"
     assert not queue.exists() or not list(queue.glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"action": "unknown"},
+        {"action": "sync", "migration_id": "../../escape"},
+        {
+            "action": "download",
+            "migration_id": "staging_filestore_123",
+            "destination": "/tmp/outside-project",
+        },
+        {
+            "action": "cutover",
+            "migration_id": "staging_filestore_123",
+            "confirm_environment": "production",
+            "confirm_source_retained": True,
+        },
+        {
+            "action": "delete_source",
+            "migration_id": "staging_filestore_123",
+            "confirm_environment": "staging",
+            "confirm_migration_id": "different",
+            "delete_source": True,
+        },
+    ],
+)
+def test_filestore_api_rejects_unsafe_or_incomplete_params(
+    client,
+    params,
+):
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": params,
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_filestore_api_enqueues_explicit_cutover(
+    client,
+    project_dir,
+):
+    _enable_filestore_migration(project_dir)
+    migration_id = "staging_filestore_123"
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": {
+                "action": "cutover",
+                "migration_id": migration_id,
+                "confirm_environment": "staging",
+                "confirm_source_retained": True,
+            },
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["kind"] == "filestore_migrate"
+
+
+def test_filestore_api_rejects_project_without_migration_backend(
+    client,
+):
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": {"action": "plan"},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+    assert "explicit" in response.json()["detail"]
 
 
 def _enqueue_backup(client, token):

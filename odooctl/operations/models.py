@@ -26,6 +26,7 @@ class OperationKind(str, Enum):
     PITR_RESTORE = "pitr_restore"
     PITR_CUTOVER = "pitr_cutover"
     PITR_RECONCILE = "pitr_reconcile"
+    FILESTORE_MIGRATE = "filestore_migrate"
     MIGRATE_REHEARSAL = "migrate_rehearsal"
 
 

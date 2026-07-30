@@ -430,6 +430,7 @@ def test_s3_adapter_passes_credentials_endpoint_and_encryption(
     monkeypatch.setenv("S3_ENDPOINT", "https://objects.example.test")
     monkeypatch.setenv("S3_ACCESS", "access-value")
     monkeypatch.setenv("S3_SECRET", "secret-value")
+    monkeypatch.setenv("S3_SESSION", "session-value")
     monkeypatch.setenv("S3_REGION", "eu-central-2")
     monkeypatch.setenv("S3_KMS", "kms-key-id")
     fake = FakeBoto3()
@@ -441,6 +442,7 @@ def test_s3_adapter_passes_credentials_endpoint_and_encryption(
             endpoint_env="S3_ENDPOINT",
             access_key_env="S3_ACCESS",
             secret_key_env="S3_SECRET",
+            session_token_env="S3_SESSION",
             region_env="S3_REGION",
             encryption_algorithm="aws:kms",
             encryption_key_env="S3_KMS",
@@ -452,6 +454,7 @@ def test_s3_adapter_passes_credentials_endpoint_and_encryption(
     assert fake.client_kwargs == {
         "aws_access_key_id": "access-value",
         "aws_secret_access_key": "secret-value",
+        "aws_session_token": "session-value",
         "region_name": "eu-central-2",
         "endpoint_url": "https://objects.example.test",
     }

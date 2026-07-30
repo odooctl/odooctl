@@ -159,6 +159,11 @@ design:
 | `snapshot_create`   | yes                 | yes                | uses the config-bound snapshot environment     |
 | `snapshot_reconcile`| yes                 | yes                | requires `params.snapshot_id`                  |
 | `snapshot_restore`  | yes                 | yes                | plan-only unless `params.execute` is `true`    |
+| `pitr_base_create`  | yes                 | yes                | creates and verifies a physical base backup    |
+| `pitr_reconcile`    | yes                 | yes                | reconciles the configured recovery graph       |
+| `pitr_restore`      | yes                 | yes                | requires a safe `params.plan_id`                |
+| `pitr_cutover`      | yes                 | yes                | requires exact typed confirmations             |
+| `filestore_migrate` | yes                 | yes                | action-specific params; see below               |
 | `migrate_rehearsal` | yes                 | yes                | requires `params.to` (target version)          |
 | `restore`           | yes                 | no — CLI only      | run `odooctl restore` on the host              |
 | `deploy`            | yes                 | no — CLI only      | run `odooctl deploy` on the host               |
@@ -176,6 +181,17 @@ are intentionally kept on the CLI for now.
 
 User-supplied `params` are redacted (via `odooctl.security.redaction.redact`)
 before being recorded in the operation store and queue entry.
+
+`filestore_migrate` accepts `action` values `plan`, `sync`, `verify`,
+`cutover`, `download`, `delete_source`, and `delete_remote_marker`. Every
+action except `plan` requires a safe `migration_id`. Cutover additionally
+requires the exact `confirm_environment` and
+`confirm_source_retained: true`; source deletion requires exact environment
+and migration confirmations plus `delete_source: true`. The configured
+environment must have an explicit `object_mirror`, `posix_object_mount`, or
+`odoo_module` backend. Queued downloads accept only a safe project-relative
+destination; the runner repeats this containment check even if a queue entry
+bypasses the API. Protected environments retain restore-class RBAC.
 
 Response (202 Accepted):
 

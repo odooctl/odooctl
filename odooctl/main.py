@@ -16,6 +16,7 @@ from odooctl.commands import (
     domain as domain_cmd,
     dr as dr_cmd,
     env as env_cmd,
+    filestore_storage as filestore_cmd,
     github_actions as gha_cmd,
     import_cmd,
     init as init_cmd,
@@ -49,6 +50,7 @@ app.add_typer(security_cmd.app, name="security")
 app.add_typer(domain_cmd.app, name="domain")
 app.add_typer(dr_cmd.app, name="dr")
 app.add_typer(pitr_cmd.app, name="pitr")
+app.add_typer(filestore_cmd.app, name="filestore")
 app.add_typer(migrate_cmd.app, name="migrate")
 app.add_typer(backup_remote_cmd.app, name="backup-remote")
 
