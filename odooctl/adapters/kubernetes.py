@@ -44,13 +44,18 @@ def ownership_labels(project: str, environment: str, component: str) -> dict[str
 def render_kubernetes_resources(
     project: ProjectContext,
     environment: str,
+    *,
+    environment_config: Any | None = None,
+    additional_labels: dict[str, str] | None = None,
+    annotations: dict[str, str] | None = None,
+    image: str | None = None,
 ) -> list[dict[str, Any]]:
     """Render the canonical resources used by production and local clusters."""
     cfg = project.config
     runtime = cfg.runtime
     if not isinstance(runtime, KubernetesRuntimeConfig):
         raise ValueError("Kubernetes resources require runtime.type: kubernetes")
-    env = cfg.env(environment)
+    env = environment_config or cfg.env(environment)
     project_name = kubernetes_name(cfg.project.name)
     environment_name = kubernetes_name(environment)
     namespace = kubernetes_name(
@@ -61,6 +66,7 @@ def render_kubernetes_resources(
     )
     workload = kubernetes_name(cfg.odoo.service)
     labels = ownership_labels(cfg.project.name, environment, "odoo")
+    labels.update(additional_labels or {})
     selector_labels = {
         PROJECT_LABEL: labels[PROJECT_LABEL],
         ENVIRONMENT_LABEL: labels[ENVIRONMENT_LABEL],
@@ -82,7 +88,11 @@ def render_kubernetes_resources(
         {
             "apiVersion": "v1",
             "kind": "Namespace",
-            "metadata": {"name": namespace, "labels": labels},
+            "metadata": {
+                "name": namespace,
+                "labels": labels,
+                **({"annotations": annotations} if annotations else {}),
+            },
         },
         {
             "apiVersion": "v1",
@@ -91,6 +101,7 @@ def render_kubernetes_resources(
                 "name": f"{workload}-filestore",
                 "namespace": namespace,
                 "labels": labels,
+                **({"annotations": annotations} if annotations else {}),
             },
             "spec": {
                 "accessModes": ["ReadWriteOnce"],
@@ -111,6 +122,7 @@ def render_kubernetes_resources(
                 "name": workload,
                 "namespace": namespace,
                 "labels": labels,
+                **({"annotations": annotations} if annotations else {}),
             },
             "spec": {
                 "replicas": runtime.replicas,
@@ -121,7 +133,7 @@ def render_kubernetes_resources(
                         "containers": [
                             {
                                 "name": workload,
-                                "image": cfg.odoo.image,
+                                "image": image or cfg.odoo.image,
                                 "imagePullPolicy": runtime.image_pull_policy,
                                 "ports": [
                                     {
@@ -168,6 +180,7 @@ def render_kubernetes_resources(
                 "name": workload,
                 "namespace": namespace,
                 "labels": labels,
+                **({"annotations": annotations} if annotations else {}),
             },
             "spec": {
                 "selector": selector_labels,
@@ -187,6 +200,7 @@ def render_kubernetes_resources(
                 "name": workload,
                 "namespace": namespace,
                 "labels": labels,
+                **({"annotations": annotations} if annotations else {}),
                 **(
                     {"annotations": {"kubernetes.io/ingress.class": runtime.ingress_class}}
                     if runtime.ingress_class
@@ -271,7 +285,7 @@ class KubernetesAdapter:
         *,
         namespaced: bool,
         absent_ok: bool,
-    ) -> None:
+    ) -> bool:
         result = run(
             self._cmd("get", kind, name, "-o", "json", namespaced=namespaced),
             cwd=str(self.project.root),
@@ -281,7 +295,7 @@ class KubernetesAdapter:
         if result.returncode != 0:
             output = f"{result.stdout}\n{result.stderr}".lower()
             if absent_ok and ("notfound" in output or "not found" in output):
-                return
+                return False
             raise RuntimeError(
                 f"Could not verify ownership for {kind}/{name}: "
                 f"{result.stderr or result.stdout}"
@@ -303,6 +317,7 @@ class KubernetesAdapter:
                 f"Refusing to mutate unowned Kubernetes resource {kind}/{name}; "
                 f"label mismatch: {mismatches}"
             )
+        return True
 
     def _assert_workload_owned(self, workload: str) -> None:
         name = kubernetes_name(workload)
@@ -384,12 +399,14 @@ class KubernetesAdapter:
                 stream=True,
             )
             return
-        self._assert_owned_or_absent(
+        exists = self._assert_owned_or_absent(
             "namespace",
             self.namespace,
             namespaced=False,
-            absent_ok=False,
+            absent_ok=True,
         )
+        if not exists:
+            return
         run(
             self._cmd("delete", "namespace", self.namespace, namespaced=False),
             cwd=str(self.project.root),

@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: IN PROGRESS  
 Branch: `codex/reddit-enhancements`
 
-Implemented through: R7 (k3s/Kubernetes runtime)
+Implemented through: R8 (GitOps and ephemeral pull-request environments)
 
 ## Why this program exists
 

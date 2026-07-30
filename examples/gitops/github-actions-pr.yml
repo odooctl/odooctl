@@ -1,0 +1,90 @@
+name: Odoo preview GitOps
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: preview
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .
+      - name: Render the isolated preview
+        run: >-
+          odooctl gitops preview
+          --pr "${{ github.event.pull_request.number }}"
+          --sha "${{ github.event.pull_request.head.sha }}"
+          --config odooctl.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitops-pr-${{ github.event.pull_request.number }}
+          path: deploy/gitops/previews/
+          if-no-files-found: error
+
+  publish:
+    needs: render
+    runs-on: ubuntu-latest
+    environment: preview
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.ODOOCTL_APP_ID }}
+          private-key: ${{ secrets.ODOOCTL_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: gitops-previews
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitops-pr-${{ github.event.pull_request.number }}
+          path: deploy/gitops/previews
+      - name: Publish declarative overlay
+        run: |
+          git config user.name "odooctl preview bot"
+          git config user.email "odooctl-preview[bot]@users.noreply.github.com"
+          git add deploy/gitops/previews
+          git diff --cached --quiet || git commit -m "gitops: update PR ${{ github.event.pull_request.number }}"
+          git push origin HEAD:gitops-previews
+
+  remove:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    environment: preview
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.ODOOCTL_APP_ID }}
+          private-key: ${{ secrets.ODOOCTL_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: gitops-previews
+      - name: Remove this PR's overlays
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          find deploy/gitops/previews -mindepth 1 -maxdepth 1 -type d -name "pr-${PR_NUMBER}-*" -exec rm -r -- {} +
+          git config user.name "odooctl preview bot"
+          git config user.email "odooctl-preview[bot]@users.noreply.github.com"
+          git add -A deploy/gitops/previews
+          git diff --cached --quiet || git commit -m "gitops: remove PR ${PR_NUMBER}"
+          git push origin HEAD:gitops-previews

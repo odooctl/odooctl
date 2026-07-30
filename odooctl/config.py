@@ -927,6 +927,51 @@ class HealthcheckConfig(BaseModel):
     interval_seconds: int = 5
 
 
+class GitOpsConfig(BaseModel):
+    enabled: bool = False
+    output_path: str = ".odooctl/gitops"
+    preview_base_domain: str | None = None
+    preview_source_environment: str = "staging"
+    preview_ttl_hours: int = Field(default=24, ge=1, le=168)
+    initializer_image: str = "ghcr.io/rami-0/odooctl:latest"
+    preview_image_template: str | None = None
+
+    @field_validator("output_path")
+    @classmethod
+    def output_path_must_be_relative(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("gitops.output_path must be a project-relative path")
+        return value
+
+    @field_validator("preview_base_domain")
+    @classmethod
+    def preview_domain_must_be_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_hostname(value, "gitops.preview_base_domain")
+
+    @field_validator("preview_source_environment")
+    @classmethod
+    def preview_source_must_be_safe(cls, value: str) -> str:
+        return validate_identifier(value, "gitops.preview_source_environment")
+
+    @field_validator("preview_image_template")
+    @classmethod
+    def preview_image_template_must_be_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        unknown = re.sub(r"\{(?:revision|pull_request)\}", "", value)
+        if "{" in unknown or "}" in unknown:
+            raise ValueError(
+                "gitops.preview_image_template may only use "
+                "{revision} and {pull_request}"
+            )
+        if not value.strip() or len(value) > 512:
+            raise ValueError("gitops.preview_image_template is invalid")
+        return value
+
+
 class OdooCtlConfig(BaseModel):
     project: ProjectConfig
     runtime: RuntimeConfig | KubernetesRuntimeConfig = Field(
@@ -941,6 +986,7 @@ class OdooCtlConfig(BaseModel):
     snapshots: SnapshotsConfig = Field(default_factory=SnapshotsConfig)
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
+    gitops: GitOpsConfig = Field(default_factory=GitOpsConfig)
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
 
     @field_validator("runtime", mode="before")
@@ -999,6 +1045,14 @@ class OdooCtlConfig(BaseModel):
                 "snapshots.pre_deploy requires snapshots.environment to be a "
                 "protected environment"
             )
+        if self.gitops.enabled:
+            if self.runtime.type != "kubernetes":
+                raise ValueError("gitops.enabled requires runtime.type: kubernetes")
+            if self.gitops.preview_source_environment not in self.environments:
+                raise ValueError(
+                    "gitops.preview_source_environment "
+                    f"{self.gitops.preview_source_environment!r} is not defined"
+                )
 
         for name, env in self.environments.items():
             if name == "production" and env.clone_from:
