@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references; exec/log/rollout/status support; and fail-closed ownership
   labels. Externally managed PostgreSQL is the default, with CloudNativePG
   integration documented.
+- Declarative GitOps environment overlays and deterministic pull-request
+  environments with isolated namespace/domain/database/filestore identities,
+  fail-closed neutralized clone initialization, expiry metadata, guarded
+  cleanup, and GitHub Actions/Argo CD examples.
 - Policy-controlled remote portable backups with `required`, `best_effort`,
   and `disabled` modes; post-upload byte verification; project-scoped S3
   namespaces; globally unique 24-hex-suffixed backup IDs; UTC

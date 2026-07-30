@@ -18,6 +18,7 @@ from odooctl.commands import (
     env as env_cmd,
     filestore_storage as filestore_cmd,
     github_actions as gha_cmd,
+    gitops as gitops_cmd,
     import_cmd,
     init as init_cmd,
     logs as logs_cmd,
@@ -53,6 +54,7 @@ app.add_typer(pitr_cmd.app, name="pitr")
 app.add_typer(filestore_cmd.app, name="filestore")
 app.add_typer(migrate_cmd.app, name="migrate")
 app.add_typer(backup_remote_cmd.app, name="backup-remote")
+app.add_typer(gitops_cmd.app, name="gitops")
 
 
 def _context_config(ctx: typer.Context, config: str) -> str:

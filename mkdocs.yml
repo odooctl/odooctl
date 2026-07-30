@@ -61,6 +61,7 @@ nav:
       - API: api.md
       - Runner architecture: runner-architecture.md
       - Kubernetes runtime: kubernetes.md
+      - GitOps & PR environments: gitops.md
       - Domains & SSL: domains-ssl.md
       - Catalog: catalog.md
   - Security:
