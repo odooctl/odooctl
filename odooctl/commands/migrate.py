@@ -121,11 +121,9 @@ def rehearse(
     path_requires_ou = any(p.requires_openupgrade for p in matrix_paths)
 
     def _upgrade_fn(throwaway_db: str, target_version: str) -> UpgradeResult:
-        from odooctl.adapters.docker_compose import DockerComposeAdapter
+        from odooctl.adapters.runtime import make_runtime_adapter
 
-        compose = DockerComposeAdapter(
-            cfg.runtime.compose_file, project_dir=str(ctx.project.root)
-        )
+        runtime = make_runtime_adapter(ctx.project)
         if openupgrade:
             from odooctl.migration.openupgrade import openupgrade_db_command
 
@@ -142,7 +140,7 @@ def rehearse(
                 "--stop-after-init",
             ]
         try:
-            compose.exec(cfg.odoo.service, cmd, stream=True)
+            runtime.exec(cfg.odoo.service, cmd, stream=True)
             return UpgradeResult(ok=True)
         except Exception as exc:
             return UpgradeResult(ok=False, warnings=[str(exc)])

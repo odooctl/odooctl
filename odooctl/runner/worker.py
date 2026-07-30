@@ -40,6 +40,7 @@ from odooctl.security.principals import Principal, PrincipalKind, Role
 from odooctl.security.tokens import TokenError
 from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
 from odooctl.adapters.dr_runtime import DockerComposeDrillRuntime
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.migration.rehearse import rehearse_upgrade, UpgradeResult
 from odooctl.services.backup import run_backup
 from odooctl.services.clone import run_clone
@@ -801,11 +802,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
         path_requires_ou = any(p.requires_openupgrade for p in matrix_paths)
 
         def _upgrade_fn(throwaway_db: str, tgt_ver: str) -> UpgradeResult:
-            from odooctl.adapters.docker_compose import DockerComposeAdapter
-
-            compose = DockerComposeAdapter(
-                cfg.runtime.compose_file, project_dir=str(svc_ctx.project.root)
-            )
+            runtime = make_runtime_adapter(svc_ctx.project)
             if use_openupgrade:
                 from odooctl.migration.openupgrade import openupgrade_db_command
 
@@ -825,7 +822,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
                     "--stop-after-init",
                 ]
             try:
-                compose.exec(cfg.odoo.service, cmd, stream=True)
+                runtime.exec(cfg.odoo.service, cmd, stream=True)
                 return UpgradeResult(ok=True)
             except Exception as exc:
                 return UpgradeResult(ok=False, warnings=[str(exc)])

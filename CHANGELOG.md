@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A workload runtime protocol and central factory for deploy, restart, exec,
+  logs, status, and Odoo command execution. Docker Compose remains the
+  configuration-compatible default.
 - Policy-controlled remote portable backups with `required`, `best_effort`,
   and `disabled` modes; post-upload byte verification; project-scoped S3
   namespaces; globally unique 24-hex-suffixed backup IDs; UTC

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
 from odooctl.metadata.models import DeploymentMetadata
 from odooctl.metadata.store import MetadataStore
 from odooctl.odoo.healthcheck import check_url, with_db_selector
@@ -74,9 +75,7 @@ def run_promote(
             f"Configure promotes_to: {target} in the '{source}' environment."
         )
 
-    compose_path = ctx.project.compose_file
-    if not compose_path.exists():
-        raise FileNotFoundError(f"Compose file not found: {compose_path}")
+    validate_runtime_definition(ctx.project)
 
     missing_env_vars = cfg.missing_env_vars()
     if missing_env_vars:
@@ -109,7 +108,10 @@ def run_promote(
 
     # 4. Fast-forward merge source into target, deploy, verify
     selected_branch = tgt_env.branch
-    compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+    compose = make_runtime_adapter(
+        ctx.project,
+        compose_adapter_cls=DockerComposeAdapter,
+    )
     target_url = _env_url(cfg, target)
     status = "failed"
     message = None

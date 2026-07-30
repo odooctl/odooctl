@@ -8,6 +8,7 @@ from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
 from odooctl.adapters.postgres import PostgresAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
 from odooctl.metadata.models import DeploymentMetadata
 from odooctl.metadata.store import MetadataStore
 from odooctl.odoo.healthcheck import check_url, with_db_selector
@@ -39,9 +40,7 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
     selected_branch = branch or env.branch
     if branch and branch != env.branch:
         raise RuntimeError(f"Branch '{branch}' is not allowed for environment '{environment}'")
-    compose_path = ctx.project.compose_file
-    if not compose_path.exists():
-        raise FileNotFoundError(f"Compose file not found: {compose_path}")
+    validate_runtime_definition(ctx.project)
     filestore_path = ctx.project.resolve_path(env.filestore_path)
     if not filestore_path.exists():
         raise FileNotFoundError(f"Target filestore path not found: {filestore_path}")
@@ -64,7 +63,10 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
         public_url(env.domain, scheme=scheme, port=env.port) + cfg.healthcheck.path,
         env.db_name if env.db_selector else None,
     )
-    compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+    compose = make_runtime_adapter(
+        ctx.project,
+        compose_adapter_cls=DockerComposeAdapter,
+    )
     backup_id = None
     snapshot_id = None
     snapshot_status = None

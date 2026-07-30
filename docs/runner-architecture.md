@@ -128,3 +128,16 @@ scope-limited, expiring tokens for runner authorization. If a future milestone
 introduces remote runners or at-rest requirements that need AES-GCM or
 asymmetric signatures, the `secrets`/`tokens` modules are the contained seams to
 upgrade.
+
+## Workload runtime boundary
+
+Lifecycle code talks to the `RuntimeAdapter` protocol rather than constructing
+Docker Compose directly. The boundary covers image fetch/build, deployment,
+restart, exec, byte streaming, logs, and workload status. The configured
+runtime is selected by one factory, while `docker_compose` remains the default
+and requires no configuration migration.
+
+Database and portable-backup adapters remain separate because their lifecycle
+and credentials are independent from the Odoo workload orchestrator. This is
+also why externally managed PostgreSQL can be paired with a Kubernetes runtime
+without pretending the database is a pod owned by odooctl.

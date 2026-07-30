@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 
-from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import RuntimeAdapter
 from odooctl.utils.shell import join_csv, run
 
 
@@ -66,8 +66,8 @@ def update_modules_local(
     )
 
 
-def update_modules_compose(
-    compose: DockerComposeAdapter,
+def update_modules_runtime(
+    runtime: RuntimeAdapter,
     service: str,
     db_name: str,
     modules: list[str],
@@ -81,7 +81,7 @@ def update_modules_compose(
     if not modules:
         return
     extra_env = _resolve_password_env(db_password_env)
-    compose.exec(
+    runtime.exec(
         service,
         build_update_modules_args(
             db_name,
@@ -94,3 +94,7 @@ def update_modules_compose(
         stream=True,
         extra_env=extra_env,
     )
+
+
+# Compatibility alias for integrations importing the pre-R6 helper.
+update_modules_compose = update_modules_runtime
