@@ -26,6 +26,16 @@ class BackupManifest(BaseModel):
     backup_mode: str = "full"
     checksums: dict[str, str] = Field(default_factory=dict)
     encryption: dict[str, str] | None = None
+    remote_uri: str | None = None
+    remote_status: Literal[
+        "disabled",
+        "pending",
+        "complete",
+        "degraded",
+        "failed",
+    ] = "disabled"
+    remote_verified_at: str | None = None
+    remote_error: str | None = None
     status: str = "complete"
 
 

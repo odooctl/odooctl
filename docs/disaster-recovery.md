@@ -1,11 +1,15 @@
 # Disaster Recovery
 
-odooctl provides four layers of backup/restore UX for production safety:
+odooctl provides five complementary recovery layers:
 
 1. **Backup verification** — confirm a backup's integrity after creation.
-2. **Restore-point browser** — list and audit all local backups with checksum integrity.
-3. **DR drills** — automated drill that restores a backup into a throwaway database, healthchecks it, and cleans up.
-4. **Provider snapshots** — coarse VM/volume recovery points kept separate
+2. **Remote portable backups** — policy-controlled, project-scoped S3 copies
+   with byte verification, retrieval, and GFS retention.
+3. **Restore-point browser** — list and audit all local backups with checksum
+   integrity.
+4. **DR drills** — an isolated disposable PostgreSQL + Odoo restore and
+   healthcheck, with no connection to live data services.
+5. **Provider snapshots** — coarse VM/volume recovery points kept separate
    from portable Odoo backups.
 
 ## Provider snapshots
@@ -239,9 +243,29 @@ You can also verify any existing backup by backup ID:
 ```sh
 # Python API
 from odooctl.services.backup import verify_backup
-result = verify_backup(backups_root, "production_2026-05-31_100000")
+result = verify_backup(
+    backups_root,
+    "production_2026-05-31_100000_deadbeefcafefeed01234567",
+)
 print(result.ok, result.error)
 ```
+
+For off-host portable copies, use:
+
+```sh
+odooctl backup-remote list production
+odooctl backup-remote verify production --backup latest
+odooctl backup-remote download production --backup latest
+```
+
+Remote list/latest only accepts completed manifests owned by the configured
+project and environment. Verification streams and hashes actual object bytes,
+then reconciles remote GFS retention; any reconciliation alert makes this
+explicit verification command exit non-zero so a schedule can page an
+operator. Download verifies first and atomically publishes a new local backup
+directory. See [Remote S3 copies](backup-restore.md#remote-s3-copies) for
+`required`/`best_effort`/`disabled`, `verify_after_upload`, project
+namespacing, and orphan-abandonment rules.
 
 ## Restore-point browser
 
@@ -272,7 +296,8 @@ Restore a production backup into staging without touching production:
 
 ```sh
 odooctl restore production --to staging
-odooctl restore production --to staging --backup production_2026-05-31_100000
+odooctl restore production --to staging \
+  --backup production_2026-05-31_100000_deadbeefcafefeed01234567
 ```
 
 Safety rules:
@@ -296,39 +321,97 @@ environments:
 
 ## DR drills
 
-A DR drill restores the latest backup into a **throwaway database**, runs a healthcheck, then drops the throwaway DB. The live database is never touched.
+A DR drill restores the newest backup owned by the configured project into a
+fully disposable PostgreSQL + Odoo boundary. The restored production data is
+not sanitized, so isolation is the safety boundary: no live database,
+filestore, Odoo service, or Compose network is used.
 
 ```sh
 odooctl dr drill production
 ```
 
 Steps:
-1. Resolve the latest backup for the source environment.
-2. Validate backup checksums.
-3. Restore the DB dump into `{source_db}_dr_drill` (a throwaway DB name).
-4. Run a healthcheck.
-5. Drop the throwaway DB (always, even on failure).
-6. Report `success` or `failed`.
+1. Search the backup root newest-first for the requested environment, skipping
+   newer manifests owned by other projects in a shared root.
+2. Validate the selected manifest's project, environment, backup ID,
+   completion status, mode, and artifact checksums.
+3. Create a fresh Docker `--internal` network, a dedicated filestore volume,
+   a dedicated secret-config volume, and a disposable PostgreSQL container
+   whose data directory is on tmpfs. PostgreSQL publishes no host port.
+4. Restore the dump into the exact `{source_db}_dr_drill` name and restore the
+   matching filestore directory into the dedicated volume.
+5. Start the configured Odoo image directly on that internal network. It can
+   reach only the disposable PostgreSQL peer; it has no external egress.
+   Database listing and cron workers are disabled, and only an ephemeral
+   `127.0.0.1` HTTP port is published for the health probe.
+6. Probe Odoo with the exact drill database selector, then remove both
+   containers, both volumes, the network, and temporary config material.
+   Teardown is attempted after partial preparation, restore, startup, and
+   healthcheck failures. A teardown error makes the drill fail.
 
-Protected environments (production by default) cannot be passed as drill *targets* — the drill reads from their backups but never writes to the live DB. Since the throwaway DB is always dropped, drills are safe to run repeatedly.
+The PostgreSQL image is resolved from the configured Compose database service,
+but the live service is never executed against, joined, or used as a restore
+target. The drill creates a random database credential; secret values are
+passed through process environments or the dedicated config volume, never on
+command argv.
 
-### Python API (injectable fakes for testing)
+Protected environments such as production are valid drill *sources*. There is
+no live drill target: every write stays inside the disposable boundary. The
+CLI and runner record the drill as a locked, audited operation and return
+non-zero when restore, healthcheck, or cleanup fails.
+
+### Custom-addon prerequisite
+
+The isolated Odoo container deliberately does not inherit arbitrary Compose
+bind mounts, environment variables, networks, or the live Odoo data volume.
+`odoo.addons_paths` is written into its config, so every referenced custom
+addon path must already exist inside `odoo.image`—normally by baking the addons
+into the image. If production depends on addons available only through a host
+bind mount, the drill should fail with missing modules until you build a
+self-contained image. Do not attach the live addon/data mounts as a shortcut;
+that would weaken the isolation contract.
+
+### Python API callback wiring
 
 ```python
+from odooctl.adapters.dr_runtime import DockerComposeDrillRuntime
+from odooctl.odoo.healthcheck import check_url
+from odooctl.services.context import ServiceContext
 from odooctl.services.dr import run_dr_drill
+
+service_ctx = ServiceContext.from_config_path("odooctl.yml")
+config = service_ctx.project.config
+runtime = DockerComposeDrillRuntime(service_ctx.project)
+
+def healthcheck(url: str) -> bool:
+    check_url(
+        url,
+        timeout=config.healthcheck.timeout_seconds,
+        retries=config.healthcheck.retries,
+        interval=config.healthcheck.interval_seconds,
+    )
+    return True
 
 result = run_dr_drill(
     environment="production",
-    backups_root=project.backups_dir,
-    db_adapter=my_db_adapter,
-    fs_adapter=my_fs_adapter,
-    healthcheck_fn=lambda url: True,
-    is_protected_fn=config.is_protected,
+    expected_project=config.project.name,
+    backups_root=service_ctx.project.backups_dir,
+    healthcheck_fn=healthcheck,
+    runtime_filestore_root=(
+        f"{config.odoo.filestore_container_path.rstrip('/')}/filestore"
+    ),
+    prepare_runtime_fn=runtime.prepare,
+    restore_database_fn=runtime.restore_database,
+    restore_filestore_fn=runtime.restore_filestore,
+    start_runtime_fn=runtime.start,
+    stop_runtime_fn=runtime.stop,
 )
 print(result.status, result.backup_id)
 ```
 
-All dependencies are injectable, making unit tests use fakes without touching real databases.
+The service fails closed unless the complete isolated-runtime callback set is
+provided. Compatibility arguments for live database or filestore adapters are
+never called.
 
 ## Web UI
 
@@ -356,7 +439,12 @@ backups:
 }
 ```
 
-For real S3 uploads, the adapter passes the matching `ServerSideEncryption` and optional `SSEKMSKeyId` `ExtraArgs` to `boto3.upload_file()`. The key ID is read from the named environment variable and is not written to the manifest or logs. If boto3 is unavailable and the adapter falls back to the local mirror used by tests/offline runs, the mirror is a local copy and should not be treated as an encrypted off-site destination.
+For S3 uploads, the adapter passes the matching `ServerSideEncryption` and
+optional `SSEKMSKeyId` `ExtraArgs` to `boto3.upload_file()`. The key ID is read
+from the named environment variable and is not written to the manifest or
+logs. Missing S3 support, credentials, or provider access follows
+`backups.remote.policy`; no alternate destination is treated as an off-site
+copy.
 
 ## Safety invariants
 
@@ -364,6 +452,13 @@ For real S3 uploads, the adapter passes the matching `ServerSideEncryption` and 
 - Cross-env restore from a protected source (production) is refused if the target environment has `sanitize: false` — the refusal happens before any DB or filesystem work.
 - When source is protected, the temp DB is sanitized (mail servers, crons, payment providers, API keys, webhooks) before the atomic swap promotes it into the target DB name.
 - Restore-to-staging restores the DB into a temporary incoming DB, sanitizes it, and swaps before target healthcheck.
-- DR drill throwaway DB is always dropped in a `finally` block.
+- A DR drill never restores into the live PostgreSQL cluster or live
+  filestore. It tears down the disposable PostgreSQL, isolated Odoo,
+  drill-only volumes, internal network, and temporary credential material even
+  after partial setup; cleanup failure is a drill failure.
 - Backup checksums are verified before any restore or drill.
-- Remote S3 encryption metadata is recorded in the backup manifest and real boto3 uploads request S3 server-side encryption; no key material is stored.
+- Remote S3 encryption metadata is recorded in the backup manifest and S3
+  uploads request server-side encryption; no key material is stored.
+- Remote backup list/latest/retention operations are project- and
+  environment-scoped, and incomplete markerless prefixes are never deleted
+  based on age alone.

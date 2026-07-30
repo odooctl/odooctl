@@ -6,7 +6,9 @@
 - Redaction intentionally skips short/common values from `redaction.ignore_values` such as `odoo`; otherwise logs become unreadable in local Odoo stacks. Use strong, unique production secrets.
 - Run `odooctl doctor` after exporting env vars. It warns when referenced secrets are shorter than `redaction.min_secret_length` or ignored by the redaction policy.
 - Protect local backup directories with host filesystem permissions.
-- Install `odooctl[s3]` and configure real S3 credentials for off-host backup copies. If remote upload cannot run, `odooctl` warns and writes a local mirror under `.odooctl/remote-backups/`.
+- Install `odooctl[s3]`, configure real S3 credentials, and choose
+  `backups.remote.policy` explicitly for off-host backup copies. Remote
+  failures never change the configured destination.
 - Never clone production into staging without sanitization unless you fully understand the risk.
 - Staging sanitization disables mail servers, fetchmail, crons, payment providers, queue jobs, and pending outbound mail by default.
 
@@ -54,6 +56,64 @@ finding, so it is stated here explicitly.
 - **Secrets**: referenced by env-var name in config, resolved only at execution
   time in the privileged process, redacted from logs, errors, and streamed
   operation events.
+
+### Remote-backup boundary
+
+- `required` makes upload, immediate byte verification, and retention failures
+  fail backup creation after the validated local backup has been safely
+  published. `best_effort` keeps local backup creation successful but records
+  and warns about a degraded remote result. `disabled` creates no remote
+  client. Explicit `backup-remote verify` always exits non-zero on a retention
+  reconciliation alert, under either active policy, so monitors cannot miss
+  cleanup failures.
+- New objects are written below a deterministic project-scoped namespace, and
+  completion manifests are validated against the configured project and
+  environment before list/latest/download/delete operations. GFS retention
+  re-checks ownership immediately before deletion. These checks prevent
+  accidental cross-project deletion; S3 IAM and bucket policy remain the
+  security boundary against a hostile bucket writer who could forge object
+  contents.
+- Local manifest filesystem time and remote completion-marker provider time
+  enforce `retention.grace_hours` before deletion. Together with explicit
+  protection of the caller's new ID, this prevents concurrent publishers from
+  mutually deleting just-completed backups; a later pass applies the
+  deterministic GFS result.
+- A payload-only prefix is not a backup: the final manifest is the completion
+  marker. `orphan_grace_hours` only delays cleanup. Automatic deletion also
+  requires a valid identity-bound abandonment marker from the publisher and a
+  second inventory check. An old prefix without that marker is preserved and
+  raises a manual-review alert, because age is not proof that another host has
+  stopped uploading.
+- `verify_after_upload: true` reads and hashes the stored bytes before marking
+  an upload complete. `backup-remote verify` performs the same byte-level
+  verification on demand, and `backup-remote download` verifies before staging
+  and atomically publishing a local directory.
+- Encryption key values, S3 access keys, endpoint credentials, and generated
+  drill database passwords stay out of argv and manifests. Only non-secret
+  encryption metadata and environment-variable references are recorded.
+
+### DR-drill boundary
+
+- A drill restores unsanitized backup data only into a disposable PostgreSQL
+  container on tmpfs and a dedicated filestore volume. An internal Docker
+  network gives isolated Odoo access to that PostgreSQL peer but no external
+  egress; PostgreSQL has no published port and Odoo exposes only an ephemeral
+  loopback healthcheck port.
+- The selected backup must belong to the configured project and requested
+  environment. A newer foreign-project backup in a shared root is skipped,
+  then the selected backup's identity and checksums are validated before any
+  Docker mutation.
+- The live Compose database/Odoo services, networks, and data volumes are
+  never joined or used as restore targets. Cleanup attempts every drill
+  container, volume, network, temporary config, and in-memory credential even
+  after partial setup; an incomplete cleanup fails the drill.
+- The isolated Odoo container deliberately does not inherit live Compose bind
+  mounts. Custom addons must exist inside the configured image at
+  `odoo.addons_paths`. Treat a missing-addon drill failure as an image
+  packaging issue rather than attaching live mounts and weakening isolation.
+- This isolates the drill from the application stack, not from the Docker
+  host. Anyone who controls the Docker daemon or the operator-trusted config
+  remains privileged under the trust model above.
 
 ### Audit-trail integrity (optional HMAC keying)
 

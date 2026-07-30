@@ -37,13 +37,49 @@ def test_backup_manifest_round_trip_includes_artifacts_and_version():
 def test_metadata_store_writes_latest_files(tmp_path):
     store = MetadataStore(tmp_path / ".odooctl")
     manifest = BackupManifest(
-        backup_id="production_1", project="p", environment="production", db_name="odoo", odoo_version="19.0"
+        backup_id="production_1",
+        project="p",
+        environment="production",
+        db_name="odoo",
+        odoo_version="19.0",
     )
     store.save_backup_manifest("production_1", manifest)
     assert store.latest_backup("production")["db_name"] == "odoo"
     dep = DeploymentMetadata(project="p", environment="staging", branch="staging", status="success")
     store.save_deployment(dep)
     assert store.latest_deployment("staging")["status"] == "success"
+
+
+def test_updating_older_backup_manifest_does_not_move_latest_pointer(tmp_path):
+    store = MetadataStore(tmp_path / ".odooctl")
+    older = BackupManifest(
+        backup_id="production_1",
+        project="p",
+        environment="production",
+        db_name="odoo",
+        odoo_version="19.0",
+    )
+    newer = older.model_copy(
+        update={
+            "backup_id": "production_2",
+            "timestamp": "2026-07-30T12:00:00Z",
+        }
+    )
+    store.save_backup_manifest(older.backup_id, older)
+    store.save_backup_manifest(newer.backup_id, newer)
+
+    store.update_backup_manifest(
+        older.model_copy(
+            update={
+                "remote_status": "complete",
+                "remote_verified_at": "2026-07-30T13:00:00Z",
+            }
+        )
+    )
+
+    assert store.latest_backup("production")["backup_id"] == newer.backup_id
+    updated = (store.root / "backups" / f"{older.backup_id}.json").read_text()
+    assert BackupManifest.model_validate_json(updated).remote_status == "complete"
 
 
 def test_snapshot_manifest_uses_its_own_index_and_round_trips(tmp_path):

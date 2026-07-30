@@ -714,6 +714,36 @@ def test_backup_command_creates_operation_record(tmp_path, monkeypatch):
     assert ops[0].status.value == "succeeded"
 
 
+def test_backup_command_fails_operation_when_verification_fails(tmp_path, monkeypatch):
+    from odooctl.commands import backup as backup_cmd
+    from odooctl.operations.store import OperationStore
+    from odooctl.services import backup as backup_svc
+    from odooctl.services.models import BackupResult
+
+    config = tmp_path / "odooctl.yml"
+    config.write_text(MINIMAL_CONFIG)
+    monkeypatch.setattr(
+        backup_cmd,
+        "run_backup",
+        lambda ctx, environment: BackupResult(backup_id="production_test"),
+    )
+    monkeypatch.setattr(
+        backup_svc,
+        "verify_backup",
+        lambda *args, **kwargs: backup_svc.BackupVerifyResult(
+            ok=False,
+            backup_id="production_test",
+            error="checksum mismatch",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        backup_cmd.execute("production", str(config), verify=True)
+
+    [operation] = OperationStore(tmp_path / ".odooctl").list_all()
+    assert operation.status.value == "failed"
+
+
 def test_deploy_command_creates_operation_record_on_failure(tmp_path, monkeypatch):
     from odooctl.commands import deploy as deploy_cmd
     from odooctl.operations.store import OperationStore

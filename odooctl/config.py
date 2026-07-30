@@ -204,7 +204,7 @@ class OdooConfig(BaseModel):
 
 
 class RemoteBackupConfig(BaseModel):
-    type: str = "s3"
+    type: Literal["s3"] = "s3"
     bucket: str | None = None
     region: str | None = None
     prefix: str = ""
@@ -214,12 +214,60 @@ class RemoteBackupConfig(BaseModel):
     region_env: str | None = None
     encryption_algorithm: str | None = None
     encryption_key_env: str | None = None
+    policy: Literal["required", "best_effort", "disabled"] = "best_effort"
+    verify_after_upload: bool = True
+    orphan_grace_hours: int = Field(default=24, ge=1)
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(ch) < 32 for ch in normalized)
+        ):
+            raise ValueError(f"{info.field_name} must be a non-empty S3 bucket name without path separators")
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if "\\" in value or any(ord(ch) < 32 for ch in value):
+            raise ValueError(f"{info.field_name} must be a safe POSIX object-key prefix")
+        if normalized:
+            parts = PurePosixPath(normalized).parts
+            if value.startswith("/") or any(part in {".", ".."} for part in parts):
+                raise ValueError(f"{info.field_name} must be relative and must not contain '.' or '..' segments")
+        return normalized
+
+    @model_validator(mode="after")
+    def active_remote_requires_bucket(self) -> "RemoteBackupConfig":
+        if self.policy != "disabled" and not self.bucket:
+            raise ValueError("remote backup bucket is required unless policy is disabled")
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "remote backup access_key_env and secret_key_env must be configured together"
+            )
+        if self.encryption_key_env and not self.encryption_algorithm:
+            raise ValueError(
+                "remote backup encryption_key_env requires encryption_algorithm"
+            )
+        return self
 
 
 class RetentionConfig(BaseModel):
-    daily: int = 7
-    weekly: int = 4
-    monthly: int = 6
+    daily: int = Field(default=7, ge=0)
+    weekly: int = Field(default=4, ge=0)
+    monthly: int = Field(default=6, ge=0)
+    grace_hours: int = Field(default=1, ge=1)
 
 
 class BackupsConfig(BaseModel):
@@ -546,7 +594,10 @@ class OdooCtlConfig(BaseModel):
             refs.add(self.postgres.service_password_env)
         if self.odoo.db_password_env:
             refs.add(self.odoo.db_password_env)
-        if self.backups.remote:
+        if (
+            self.backups.remote
+            and self.backups.remote.policy != "disabled"
+        ):
             remote = self.backups.remote
             for value in (
                 remote.endpoint_env,
@@ -622,9 +673,17 @@ postgres:
 
 backups:
   local_path: backups
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 6
+    grace_hours: 1
   remote:
     type: s3
     bucket: demo-odoo-backups
+    policy: required
+    verify_after_upload: true
+    orphan_grace_hours: 24
     endpoint_env: ODOO_S3_ENDPOINT
     access_key_env: ODOO_S3_ACCESS_KEY
     secret_key_env: ODOO_S3_SECRET_KEY

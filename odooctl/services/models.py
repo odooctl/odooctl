@@ -59,6 +59,15 @@ class DoctorReport:
 @dataclass
 class BackupResult:
     backup_id: str
+    remote_uri: str | None = None
+    remote_status: Literal[
+        "disabled",
+        "pending",
+        "complete",
+        "degraded",
+        "failed",
+    ] = "disabled"
+    remote_error: str | None = None
 
 
 @dataclass
