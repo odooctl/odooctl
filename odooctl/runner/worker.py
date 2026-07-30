@@ -44,6 +44,11 @@ from odooctl.services.backup import run_backup
 from odooctl.services.clone import run_clone
 from odooctl.services.context import ServiceContext
 from odooctl.services.dr import run_dr_drill
+from odooctl.services.snapshots import (
+    run_snapshot_create,
+    run_snapshot_reconcile,
+    run_snapshot_restore,
+)
 from odooctl.utils.shell import redact
 
 if TYPE_CHECKING:
@@ -61,6 +66,9 @@ _KIND_ACTION: dict[str, rbac.Action] = {
     "update_modules": rbac.Action.DEPLOY,
     "rollback": rbac.Action.RESTORE,
     "dr_drill": rbac.Action.RESTORE,
+    "snapshot_create": rbac.Action.BACKUP,
+    "snapshot_reconcile": rbac.Action.BACKUP,
+    "snapshot_restore": rbac.Action.RESTORE,
     "migrate_rehearsal": rbac.Action.RESTORE,
 }
 
@@ -375,6 +383,79 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
         if result.status != "success":
             raise RuntimeError(result.message or "DR drill failed")
         op_ctx.emit(f"DR drill complete: {result.backup_id}", phase="dr_drill")
+
+    elif kind == OperationKind.SNAPSHOT_CREATE.value:
+        result = run_snapshot_create(svc_ctx, env)
+        op_ctx.emit(
+            f"snapshot {result.status}: {result.snapshot_id}",
+            phase="snapshot",
+            data={
+                "snapshot_id": result.snapshot_id,
+                "provider": result.provider,
+                "status": result.status,
+                "source_resource_id": result.source_resource_id,
+            },
+        )
+
+    elif kind == OperationKind.SNAPSHOT_RECONCILE.value:
+        snapshot_id = str(params.get("snapshot_id", ""))
+        if not snapshot_id:
+            raise ValueError(
+                "snapshot_reconcile requires 'snapshot_id' in params"
+            )
+        result = run_snapshot_reconcile(
+            svc_ctx,
+            snapshot_id,
+            expected_environment=env,
+        )
+        op_ctx.emit(
+            f"snapshot {result.status}: {result.snapshot_id}",
+            phase="snapshot",
+            data={
+                "snapshot_id": result.snapshot_id,
+                "status": result.status,
+                "source_resource_id": result.source_resource_id,
+            },
+        )
+
+    elif kind == OperationKind.SNAPSHOT_RESTORE.value:
+        snapshot_id = str(params.get("snapshot_id", ""))
+        if not snapshot_id:
+            raise ValueError("snapshot_restore requires 'snapshot_id' in params")
+        execute = params.get("execute", False)
+        if not isinstance(execute, bool):
+            raise ValueError("snapshot_restore 'execute' must be a boolean")
+        result = run_snapshot_restore(
+            svc_ctx,
+            snapshot_id,
+            execute=execute,
+            confirm_snapshot_id=params.get("confirm_snapshot"),
+            confirm_resource_id=params.get("confirm_resource"),
+            expected_environment=env,
+        )
+        op_ctx.emit(
+            (
+                f"snapshot recovery {result.status}"
+                if result.executed
+                else "snapshot recovery planned"
+            ),
+            phase="snapshot_restore",
+            data={
+                "snapshot_id": snapshot_id,
+                "source_resource_id": result.plan.source_resource_id,
+                "status": result.status,
+                "message": result.message,
+                "restored_resource_ids": list(result.restored_resource_ids),
+                "plan": {
+                    "provider": result.plan.provider,
+                    "commands": [
+                        list(command) for command in result.plan.commands
+                    ],
+                    "destructive": result.plan.destructive,
+                    "notes": list(result.plan.notes),
+                },
+            },
+        )
 
     elif kind == OperationKind.MIGRATE_REHEARSAL.value:
         from odooctl.migration.matrix import supported_paths

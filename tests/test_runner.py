@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -65,6 +66,7 @@ def _make_entry(
     env: str = "production",
     nonce: str | None = None,
     roles: list[str] | None = None,
+    params: dict | None = None,
 ) -> QueueEntry:
     extra: dict = {"roles": roles if roles is not None else ["operator"]}
     token = tokens.mint(
@@ -82,7 +84,7 @@ def _make_entry(
         project=project,
         environment=env,
         actor="api-client",
-        params_redacted={},
+        params_redacted=params or {},
         token=token,
     )
 
@@ -416,6 +418,158 @@ def test_runner_claims_and_executes_dr_drill(project_dir, fake_registry):
     assert op.status == OperationStatus.SUCCEEDED
     events = store.load_events(op_id)
     assert any("DR drill complete: bk-drill" in e.message for e in events)
+
+
+def test_runner_claims_and_executes_snapshot_create(project_dir, fake_registry):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snapcreate1"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_CREATE,
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(op_id=op_id, kind="snapshot_create")
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_create",
+        return_value=SimpleNamespace(
+            snapshot_id="production-snapshot-1",
+            provider="aws_ebs",
+            status="complete",
+            source_resource_id="i-0123456789abcdef0",
+        ),
+    ) as create:
+        assert worker.claim_and_run() is True
+
+    create.assert_called_once()
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_snapshot_reconcile_forwards_environment_lock(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snapreconcile1"
+    snapshot_id = "production-20260730-deadbeef"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_RECONCILE,
+        "test-project",
+        "production",
+        "api-client",
+        {"snapshot_id": snapshot_id},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="snapshot_reconcile",
+            params={"snapshot_id": snapshot_id},
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_reconcile",
+        return_value=SimpleNamespace(
+            snapshot_id=snapshot_id,
+            status="complete",
+            source_resource_id="i-0123456789abcdef0",
+        ),
+    ) as reconcile:
+        assert worker.claim_and_run() is True
+
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    reconcile.assert_called_once()
+    assert reconcile.call_args.kwargs["expected_environment"] == "production"
+
+
+def test_runner_snapshot_restore_forwards_typed_confirmation_and_lock(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snaprestore1"
+    snapshot_id = "production-20260730-deadbeef"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_RESTORE,
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="snapshot_restore",
+            roles=["admin"],
+            params={
+                "snapshot_id": snapshot_id,
+                "execute": True,
+                "confirm_snapshot": snapshot_id,
+                "confirm_resource": "i-0123456789abcdef0",
+            },
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_restore",
+        return_value=SimpleNamespace(
+            executed=True,
+            restored_resource_ids=("vol-new",),
+            status="pending",
+            message="volume creation is pending",
+            plan=SimpleNamespace(
+                provider="aws_ebs",
+                source_resource_id="i-0123456789abcdef0",
+                commands=(("aws", "ec2", "create-volume"),),
+                destructive=False,
+                notes=("unattached recovery volume",),
+            ),
+        ),
+    ) as restore:
+        assert worker.claim_and_run() is True
+
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    kwargs = restore.call_args.kwargs
+    assert kwargs["confirm_snapshot_id"] == snapshot_id
+    assert kwargs["confirm_resource_id"] == "i-0123456789abcdef0"
+    assert kwargs["expected_environment"] == "production"
+    result_event = next(
+        event
+        for event in store.load_events(op_id)
+        if event.phase == "snapshot_restore"
+    )
+    assert result_event.message == "snapshot recovery pending"
+    assert result_event.data["status"] == "pending"
+    assert result_event.data["message"] == "volume creation is pending"
+    assert result_event.data["source_resource_id"] == "i-0123456789abcdef0"
+    assert result_event.data["plan"]["commands"] == [
+        ["aws", "ec2", "create-volume"]
+    ]
 
 
 def test_runner_rejects_protected_destructive_op_with_operator_role(tmp_path):

@@ -57,6 +57,9 @@ def test_operation_kind_values():
     assert OperationKind.UPDATE_MODULES.value == "update_modules"
     assert OperationKind.ROLLBACK.value == "rollback"
     assert OperationKind.DR_DRILL.value == "dr_drill"
+    assert OperationKind.SNAPSHOT_CREATE.value == "snapshot_create"
+    assert OperationKind.SNAPSHOT_RECONCILE.value == "snapshot_reconcile"
+    assert OperationKind.SNAPSHOT_RESTORE.value == "snapshot_restore"
 
 
 def test_operation_status_values():

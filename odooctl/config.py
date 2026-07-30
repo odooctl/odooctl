@@ -7,7 +7,14 @@ from typing import Literal
 
 import yaml
 import click
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 # Defense-in-depth input validation (audit findings C3/F8). These values flow
 # into subprocess argv, container paths, docker volume names, and Traefik YAML,
@@ -221,6 +228,136 @@ class BackupsConfig(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
+def _validate_executable(value: str, field_name: str) -> str:
+    if not value or not value.strip() or any(ch.isspace() for ch in value):
+        raise ValueError(f"{field_name} must be one executable path without whitespace")
+    return value
+
+
+class AwsEbsSnapshotConfig(BaseModel):
+    instance_id: str
+    region: str
+    recovery_availability_zone: str = Field(
+        validation_alias=AliasChoices(
+            "recovery_availability_zone",
+            "availability_zone",
+        )
+    )
+    profile: str | None = None
+    include_root_volume: bool = True
+    completion_timeout_seconds: int = Field(default=600, ge=0, le=86400)
+    poll_interval_seconds: float = Field(default=15.0, gt=0, le=300)
+    cli_command: str = "aws"
+
+    @field_validator("instance_id")
+    @classmethod
+    def instance_id_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not re.fullmatch(r"i-[0-9a-fA-F]{8,32}", value):
+            raise ValueError(f"{info.field_name} must be an EC2 instance id")
+        return value
+
+    @field_validator("region", "recovery_availability_zone", "profile")
+    @classmethod
+    def cloud_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value):
+            raise ValueError(f"{info.field_name} contains unsupported characters")
+        return value
+
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_executable(value, info.field_name)
+
+    @model_validator(mode="after")
+    def recovery_zone_must_belong_to_region(self) -> "AwsEbsSnapshotConfig":
+        suffix = self.recovery_availability_zone[len(self.region) :]
+        if (
+            not self.recovery_availability_zone.startswith(self.region)
+            or not suffix
+            or not (suffix[0].isalpha() or suffix[0] == "-")
+        ):
+            raise ValueError(
+                "recovery_availability_zone must belong to the configured AWS region"
+            )
+        return self
+
+
+class HetznerSnapshotConfig(BaseModel):
+    server: str
+    recovery_server_type: str
+    recovery_location: str
+    recovery_network: str
+    context: str | None = None
+    token_env: str = "HCLOUD_TOKEN"
+    completion_timeout_seconds: int = Field(default=600, ge=0, le=86400)
+    poll_interval_seconds: float = Field(default=10.0, gt=0, le=300)
+    cli_command: str = "hcloud"
+
+    @field_validator(
+        "server",
+        "recovery_server_type",
+        "recovery_location",
+        "recovery_network",
+        "context",
+    )
+    @classmethod
+    def resource_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, info.field_name)
+
+    @field_validator("token_env")
+    @classmethod
+    def token_env_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_executable(value, info.field_name)
+
+
+class SnapshotsConfig(BaseModel):
+    provider: Literal["none", "aws_ebs", "hetzner_cloud"] = "none"
+    environment: str = "production"
+    pre_deploy: Literal["disabled", "preferred", "required"] = "disabled"
+    aws_ebs: AwsEbsSnapshotConfig | None = None
+    hetzner_cloud: HetznerSnapshotConfig | None = None
+
+    @field_validator("environment")
+    @classmethod
+    def environment_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        return validate_identifier(value, info.field_name)
+
+    @model_validator(mode="after")
+    def provider_settings_must_match(self) -> "SnapshotsConfig":
+        if self.provider == "none":
+            if self.pre_deploy != "disabled":
+                raise ValueError(
+                    "snapshots.pre_deploy must be disabled when snapshots.provider is none"
+                )
+            return self
+        if self.provider == "aws_ebs" and self.aws_ebs is None:
+            raise ValueError("snapshots.aws_ebs is required for the aws_ebs provider")
+        if self.provider == "hetzner_cloud" and self.hetzner_cloud is None:
+            raise ValueError(
+                "snapshots.hetzner_cloud is required for the hetzner_cloud provider"
+            )
+        return self
+
+
 class SanitizationConfig(BaseModel):
     native_neutralize: Literal["required", "preferred", "disabled"] = "preferred"
     sql_files: list[str] = Field(default_factory=list)
@@ -262,6 +399,7 @@ class OdooCtlConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     odoo: OdooConfig
     backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    snapshots: SnapshotsConfig = Field(default_factory=SnapshotsConfig)
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
@@ -288,6 +426,25 @@ class OdooCtlConfig(BaseModel):
         seen_filestores: dict[str, str] = {}
         seen_domains: dict[str, str] = {}
         seen_branches: dict[str, str] = {}
+
+        if (
+            self.snapshots.provider != "none"
+            and self.snapshots.environment not in self.environments
+        ):
+            known = ", ".join(sorted(self.environments))
+            raise ValueError(
+                f"snapshots.environment {self.snapshots.environment!r} is not "
+                f"defined. Known: {known}"
+            )
+        if (
+            self.snapshots.provider != "none"
+            and self.snapshots.pre_deploy != "disabled"
+            and not self.is_protected(self.snapshots.environment)
+        ):
+            raise ValueError(
+                "snapshots.pre_deploy requires snapshots.environment to be a "
+                "protected environment"
+            )
 
         for name, env in self.environments.items():
             if name == "production" and env.clone_from:
@@ -379,7 +536,11 @@ class OdooCtlConfig(BaseModel):
             known = ", ".join(sorted(self.environments))
             raise KeyError(f"Unknown environment '{name}'. Known: {known}") from exc
 
-    def referenced_env_vars(self) -> list[str]:
+    def referenced_env_vars(
+        self,
+        *,
+        include_snapshot: bool = False,
+    ) -> list[str]:
         refs = {self.postgres.password_env}
         if self.postgres.service_password_env:
             refs.add(self.postgres.service_password_env)
@@ -396,10 +557,43 @@ class OdooCtlConfig(BaseModel):
             ):
                 if value:
                     refs.add(value)
+        if (
+            include_snapshot
+            and
+            self.snapshots.provider == "hetzner_cloud"
+            and self.snapshots.hetzner_cloud is not None
+            and not self.snapshots.hetzner_cloud.context
+        ):
+            refs.add(self.snapshots.hetzner_cloud.token_env)
         return sorted(refs)
 
-    def missing_env_vars(self) -> list[str]:
-        return [name for name in self.referenced_env_vars() if not os.getenv(name)]
+    def snapshot_referenced_env_vars(self) -> list[str]:
+        if (
+            self.snapshots.provider == "hetzner_cloud"
+            and self.snapshots.hetzner_cloud is not None
+            and not self.snapshots.hetzner_cloud.context
+        ):
+            return [self.snapshots.hetzner_cloud.token_env]
+        return []
+
+    def missing_env_vars(
+        self,
+        *,
+        include_snapshot: bool = False,
+    ) -> list[str]:
+        return [
+            name
+            for name in self.referenced_env_vars(
+                include_snapshot=include_snapshot,
+            )
+            if not os.getenv(name)
+        ]
+
+    def missing_snapshot_env_vars(self) -> list[str]:
+        return [
+            name for name in self.snapshot_referenced_env_vars()
+            if not os.getenv(name)
+        ]
 
 
 def load_config(path: str | Path = "odooctl.yml") -> OdooCtlConfig:
@@ -436,6 +630,10 @@ backups:
     secret_key_env: ODOO_S3_SECRET_KEY
     region: eu-central-1
     prefix: demo-odoo
+
+snapshots:
+  provider: none
+  pre_deploy: disabled
 
 redaction:
   min_secret_length: 6

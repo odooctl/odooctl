@@ -160,6 +160,48 @@ def list_backups(
     return {"backups": backups}
 
 
+@router.get("/projects/{project}/snapshots")
+def list_snapshots(
+    project: str,
+    request: Request,
+    environment: str | None = None,
+    principal=Depends(require_action(Action.BACKUPS)),
+):
+    from odooctl.metadata.store import MetadataStore
+
+    ctx = _load_ctx(request, project)
+    if environment is not None and environment not in ctx.config.environments:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown environment: {environment!r}",
+        )
+    manifests = MetadataStore(ctx.state_dir).list_snapshots(environment)
+    return {
+        "snapshots": [
+            manifest.model_dump(mode="json") for manifest in manifests
+        ]
+    }
+
+
+@router.get("/projects/{project}/snapshots/{snapshot_id}")
+def get_snapshot(
+    project: str,
+    snapshot_id: str,
+    request: Request,
+    principal=Depends(require_action(Action.BACKUPS)),
+):
+    from odooctl.metadata.store import MetadataStore
+
+    ctx = _load_ctx(request, project)
+    try:
+        manifest = MetadataStore(ctx.state_dir).get_snapshot(snapshot_id)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if manifest.project != ctx.config.project.name:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return manifest.model_dump(mode="json")
+
+
 @router.get("/projects/{project}/restore-points")
 def list_restore_points(
     project: str,

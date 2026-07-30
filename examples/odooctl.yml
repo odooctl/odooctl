@@ -24,6 +24,10 @@ backups:
     region: eu-central-1
     prefix: demo-odoo
 
+snapshots:
+  provider: none
+  pre_deploy: disabled
+
 redaction:
   min_secret_length: 6
   ignore_values:

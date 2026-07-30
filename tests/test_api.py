@@ -386,6 +386,129 @@ def test_operator_cannot_enqueue_dr_drill_on_protected_env(client):
     assert resp.status_code == 403
 
 
+def test_snapshot_operations_have_backup_and_restore_rbac_classes(client):
+    operator = _mint_operator()
+    create = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_create",
+            "environment": "production",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert create.status_code == 202
+
+    reconcile = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_reconcile",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert reconcile.status_code == 202
+
+    restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_restore",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert restore.status_code == 403
+
+    admin = _mint_admin()
+    restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_restore",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {admin}"},
+    )
+    assert restore.status_code == 202
+
+
+def test_snapshot_api_rejects_environment_label_outside_provider_binding(
+    client,
+    project_dir,
+):
+    with (project_dir / "odooctl.yml").open("a") as handle:
+        handle.write(
+            """
+snapshots:
+  provider: aws_ebs
+  environment: production
+  aws_ebs:
+    instance_id: i-0123456789abcdef0
+    region: us-east-1
+    recovery_availability_zone: us-east-1a
+"""
+        )
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_create",
+            "environment": "staging",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+    assert "bound to environment 'production'" in response.json()["detail"]
+    queue = project_dir / ".odooctl" / "queue"
+    assert not queue.exists() or not list(queue.glob("*.json"))
+
+
+def test_snapshot_api_exposes_exact_restore_confirmation_identity(
+    client,
+    project_dir,
+):
+    from odooctl.metadata.models import SnapshotManifest, SnapshotResource
+    from odooctl.metadata.store import MetadataStore
+
+    manifest = SnapshotManifest(
+        snapshot_id="production-20260730-deadbeef",
+        project="test-project",
+        environment="production",
+        provider="hetzner_cloud",
+        source_resource_id="424242",
+        resources=[
+            SnapshotResource(
+                snapshot_resource_id="12345",
+                source_resource_id="424242",
+                kind="server_root_disk",
+                state="available",
+            )
+        ],
+        scope=["hetzner_server_local_root_disk"],
+        consistency="powered_off_consistent",
+    )
+    MetadataStore(project_dir / ".odooctl").save_snapshot_manifest(manifest)
+    headers = {"Authorization": f"Bearer {_mint_viewer()}"}
+
+    listed = client.get(
+        "/projects/test-project/snapshots",
+        headers=headers,
+    )
+    detail = client.get(
+        f"/projects/test-project/snapshots/{manifest.snapshot_id}",
+        headers=headers,
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["snapshots"][0]["source_resource_id"] == "424242"
+    assert detail.status_code == 200
+    assert detail.json()["snapshot_id"] == manifest.snapshot_id
+    assert detail.json()["source_resource_id"] == "424242"
+
+
 def _enqueue_backup(client, token):
     resp = client.post(
         "/projects/test-project/operations",

@@ -17,6 +17,10 @@ postgres:
 backups:
   local_path: backups
 
+snapshots:
+  provider: none
+  pre_deploy: disabled
+
 odoo:
   image: odoo:19.0
   cli_command: odoo

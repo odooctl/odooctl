@@ -1,10 +1,228 @@
 # Disaster Recovery
 
-odooctl provides three layers of backup/restore UX for production safety:
+odooctl provides four layers of backup/restore UX for production safety:
 
 1. **Backup verification** — confirm a backup's integrity after creation.
 2. **Restore-point browser** — list and audit all local backups with checksum integrity.
 3. **DR drills** — automated drill that restores a backup into a throwaway database, healthchecks it, and cleans up.
+4. **Provider snapshots** — coarse VM/volume recovery points kept separate
+   from portable Odoo backups.
+
+## Provider snapshots
+
+Provider snapshots supplement database + filestore backups. They are
+infrastructure recovery points, not portable Odoo backups and not an hourly
+backup policy. Their manifests live under
+`.odooctl/snapshots/`; portable backup manifests remain under
+`.odooctl/backups/`.
+
+Snapshot manifests are durable state machines: `requested`, `pending`,
+`complete`, or `failed`. odooctl writes the requested intent before calling a
+cloud mutation, then records provider IDs as soon as they are observed.
+Interrupted and long-running requests can therefore be resumed with
+`odooctl dr snapshot reconcile SNAPSHOT_ID`.
+
+One provider configuration is deliberately bound to one
+`snapshots.environment` and one infrastructure source. The environment is an
+authorization and locking boundary, not a caller-supplied label: create,
+reconcile, and restore refuse any other environment even if the caller has
+access to it.
+
+The default is an explicit no-provider mode:
+
+```yaml
+snapshots:
+  provider: none
+  pre_deploy: disabled
+```
+
+### AWS EBS multi-volume snapshots
+
+AWS mode uses the official `aws ec2 create-snapshots` operation, which creates
+a crash-consistent set across the EBS volumes attached to one EC2 instance:
+
+```yaml
+snapshots:
+  provider: aws_ebs
+  environment: production
+  pre_deploy: required
+  aws_ebs:
+    instance_id: i-0123456789abcdef0
+    region: eu-central-1
+    recovery_availability_zone: eu-central-1a
+    profile: production       # optional; normal AWS credential chain is used
+    include_root_volume: true
+    completion_timeout_seconds: 600
+    poll_interval_seconds: 15
+```
+
+Before creation, odooctl records the source Availability Zone, root/device
+mapping, volume type, provisioned IOPS and throughput, encryption/KMS identity,
+and AWS account/region. Status checks are always owner-scoped. AWS snapshot
+sets are labelled `crash_consistent`: odooctl does not claim PostgreSQL
+application consistency because it does not stop or quiesce the instance.
+
+Install the AWS CLI on the host that runs the CLI/runner and configure the
+selected profile or normal AWS credential chain. The principal needs access to
+the configured instance, volumes, snapshots, and recovery Availability Zone.
+The commands used require, at minimum, permissions corresponding to
+`sts:GetCallerIdentity`, `ec2:DescribeInstances`, `ec2:DescribeVolumes`,
+`ec2:DescribeSnapshots`, `ec2:CreateSnapshots`, `ec2:CreateVolume`, and
+snapshot/volume tagging (`ec2:CreateTags`). Encrypted snapshots also require
+the applicable KMS key policy and KMS permissions for volume creation. Scope
+the policy to the configured account, Region, source resources, recovery
+resources, and odooctl tags where AWS supports that restriction.
+
+If the configured wait expires while AWS still reports `pending`, creation
+returns a durable pending manifest instead of falsely declaring failure.
+`dr snapshot reconcile` refreshes that manifest later. Recovery recreates the
+source volume type/performance in `recovery_availability_zone`, uses
+deterministic per-volume client tokens and tags for safe retries, and leaves
+every new volume unattached. It never replaces or attaches over live volumes.
+The legacy input key `availability_zone` is accepted, but new configuration
+should use `recovery_availability_zone`. See the
+[AWS `create-snapshots` reference](https://docs.aws.amazon.com/cli/latest/reference/ec2/create-snapshots.html).
+
+### Hetzner Cloud server snapshots
+
+Hetzner mode uses `hcloud server create-image --type snapshot`:
+
+```yaml
+snapshots:
+  provider: hetzner_cloud
+  environment: production
+  pre_deploy: preferred
+  hetzner_cloud:
+    server: odoo-production
+    context: production       # optional hcloud context
+    token_env: HCLOUD_TOKEN
+    recovery_server_type: cx23
+    recovery_location: nbg1
+    recovery_network: odoo-recovery
+```
+
+`token_env` names the source variable; odooctl passes its value to hcloud as
+`HCLOUD_TOKEN`, never on argv or in a manifest. When `context` is configured,
+that hcloud context may supply credentials without a token environment
+variable. A context name is only a local credential selector: it may be renamed
+or replaced by token credentials for recovery, provided those credentials
+still address the same Hetzner project and recorded provider resources. Before
+creating an image, odooctl describes the server and refuses
+the operation if it has attached Hetzner Volumes:
+server images cover the root disk only, so accepting that topology would
+produce an incomplete Odoo recovery point.
+
+Install the `hcloud` CLI on the host that runs the CLI/runner. The selected
+context or API token must belong to the source server's Hetzner project and
+have Read & Write access: odooctl reads servers, images, and networks, creates a
+snapshot image, and creates a recovery server. Create
+`recovery_network` in that project before recovery and restrict it as an
+isolated private network for inspection hosts and recovery systems.
+
+Hetzner does not guarantee consistency for a running-server snapshot. odooctl
+therefore records `live_unverified` unless the source was observed as powered
+off, in which case it records `powered_off_consistent`. Images still in
+`creating` remain pending and cannot be restored until reconciliation observes
+`available`.
+
+Recovery uses `hcloud server create` to materialize a separate stopped server
+from the image. It attaches the server to `recovery_network`, assigns no public
+IPv4 or IPv6, and verifies the image, powered-off state, and private-network
+attachment after creation. The source server is never rebuilt. See the official
+[`create-image` command](https://github.com/hetznercloud/cli/blob/main/docs/reference/manual/hcloud_server_create-image.md)
+and [`server create` options](https://github.com/hetznercloud/cli/blob/main/docs/reference/manual/hcloud_server_create.md).
+
+### Create, list, and recover
+
+```sh
+# Create an explicit provider snapshot
+odooctl dr snapshot create production
+
+# Read odooctl's separate snapshot index
+odooctl dr snapshot list
+odooctl dr snapshot list --environment production --json
+
+# Refresh a requested/pending snapshot without creating another one
+odooctl dr snapshot reconcile production-20260730T120000Z-deadbeef
+
+# Safe default: print the recovery commands without changing provider state
+odooctl dr snapshot restore production-20260730T120000Z-deadbeef
+
+# Execute only after typing both exact identities
+odooctl dr snapshot restore production-20260730T120000Z-deadbeef --execute
+```
+
+Planning is local and side-effect free: it reads the complete manifest and
+configured recovery destination, but does not invoke AWS/hcloud or require
+provider credentials. This lets an operator review the exact commands and
+identities before arranging privileged recovery access. Create, reconcile, and
+`--execute` do invoke the provider CLI and require the prerequisites above.
+
+There is deliberately no `--yes` bypass. Interactive execution prompts for
+the exact odooctl snapshot ID and exact source resource ID. Automation must
+provide both explicitly:
+
+```sh
+odooctl dr snapshot restore "$SNAPSHOT_ID" \
+  --execute \
+  --confirm-snapshot "$SNAPSHOT_ID" \
+  --confirm-resource "$SOURCE_RESOURCE_ID"
+```
+
+Only a `complete` manifest whose individual resources are all complete or
+available can enter the restore path. A provider timeout is not automatically a
+failure:
+
+- Snapshot creation may complete as `pending`; run `dr snapshot reconcile`
+  until it becomes `complete` or `failed`.
+- If creation raises after the provider may have accepted the request, odooctl
+  preserves the last `requested`/`pending` manifest and its discovery marker.
+  Reconcile that snapshot ID before starting another create. AWS
+  `create-snapshots` and Hetzner `create-image` do not provide a client token,
+  so blindly retrying can create duplicate billable artifacts.
+- Recovery execution may also return `pending` after recording newly created
+  volume/server IDs. Re-running the same typed execution is retry-safe:
+  deterministic AWS client tokens/tags and Hetzner labels discover the existing
+  recovery resources instead of intentionally creating a second set. Always
+  inspect the recorded provider IDs before retrying or cleaning up.
+
+Explicit CLI/API create, reconcile, plan, and execute actions each receive an
+operation record, events, and an audit entry. An automatic pre-deploy snapshot
+is part of the enclosing `deploy` operation rather than a second
+`snapshot_create` operation; its manifest ID/status are recorded in deployment
+metadata. Restore metadata is written after each provider mutation, so a later
+failure does not hide already-created resources.
+
+> **Cost and retention:** EBS snapshots, replacement EBS volumes, Hetzner
+> snapshot images, and stopped recovery servers can all remain billable.
+> odooctl does not currently prune or delete provider snapshots or recovery
+> resources, and portable-backup retention settings do not apply to them.
+> Configure provider lifecycle policy where appropriate and remove artifacts
+> manually only after checking their manifest/restore IDs.
+
+The local API exposes the same plan-first flow and exact identities; see
+[Snapshot operations through the API](api.md#snapshot-operations).
+
+### Protected pre-deploy policy
+
+For the protected environment named by `snapshots.environment`,
+`pre_deploy: preferred` or `required` runs the provider snapshot after the
+portable database + filestore backup succeeds and before any rollout:
+
+- `required`: a provider failure or still-pending snapshot stops the deploy
+  before code or database mutation.
+- `preferred`: a failure or pending status is recorded in deployment metadata
+  and the deploy continues.
+- `disabled`: no automatic snapshot; explicit snapshot commands still work.
+
+Configuration validation requires the bound environment to be protected when
+automatic snapshots are enabled. A single provider block never snapshots a
+different protected environment: that environment still gets its normal
+portable pre-deploy backup, but needs a separate project/provider binding for
+provider-native snapshots.
+
+The portable backup is always retained as the primary application-level
+rollback artifact.
 
 ## Backup verification
 
