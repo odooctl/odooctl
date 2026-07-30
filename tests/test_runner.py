@@ -756,6 +756,118 @@ def test_runner_pitr_cutover_forwards_typed_confirmation(
     assert store.load(op_id).status == OperationStatus.SUCCEEDED
 
 
+def test_runner_filestore_verify_dispatches_and_records_result(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "filestoreverify1"
+    migration_id = "production_filestore_123"
+    params = {
+        "action": "verify",
+        "migration_id": migration_id,
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.FILESTORE_MIGRATE,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="filestore_migrate",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.filestore_storage.verify_migration",
+        return_value=SimpleNamespace(
+            migration_id=migration_id,
+            inventory_sha256="a" * 64,
+            object_count=2,
+            total_size=42,
+        ),
+    ) as verify:
+        assert worker.claim_and_run() is True
+
+    verify.assert_called_once()
+    assert verify.call_args.args[1:] == (
+        "production",
+        migration_id,
+    )
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    event = next(
+        item
+        for item in store.load_events(op_id)
+        if item.phase == "filestore_verify"
+    )
+    assert event.data["inventory_sha256"] == "a" * 64
+
+
+def test_runner_rejects_absolute_filestore_download_if_queue_is_forged(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "filestorepath1"
+    params = {
+        "action": "download",
+        "migration_id": "production_filestore_123",
+        "destination": "/tmp/outside-project",
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.FILESTORE_MIGRATE,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="filestore_migrate",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.filestore_storage.download_migration",
+    ) as download:
+        assert worker.claim_and_run() is True
+
+    download.assert_not_called()
+    failed = store.load(op_id)
+    assert failed.status == OperationStatus.FAILED
+    assert "project-relative" in (failed.error or "")
+
+
 def test_runner_rejects_protected_destructive_op_with_operator_role(tmp_path):
     """Runner must reject a destructive op on a protected env when token has operator-level roles.
 

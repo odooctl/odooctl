@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -66,9 +67,20 @@ class FilestoreBackend(Protocol):
     def restore_archive(self, archive_path: str | Path, target_path: str) -> None: ...
     def copy(self, source: str, target: str) -> None: ...
     def delete(self, filestore_path: str) -> None: ...
+    def exists(self, filestore_path: str) -> bool: ...
 
 
 class FilestoreAdapter:
+    def exists(self, filestore_path: str) -> bool:
+        path = Path(filestore_path)
+        if not os.path.lexists(path):
+            return False
+        if path.is_symlink() or not path.is_dir():
+            raise RuntimeError(
+                f"Filestore path is not a real directory: {filestore_path}"
+            )
+        return True
+
     def archive(self, filestore_path: str, output: str | Path) -> None:
         source = Path(filestore_path)
         if not source.exists():
@@ -196,6 +208,16 @@ class DockerVolumeFilestore:
     def delete(self, filestore_path: str) -> None:
         target = self._container_filestore_dir(filestore_path)
         self.compose.exec(self.service, ["rm", "-rf", target], stream=True)
+
+    def exists(self, filestore_path: str) -> bool:
+        target = self._container_filestore_dir(filestore_path)
+        result = self.compose.exec(
+            self.service,
+            ["test", "-d", target],
+            stream=False,
+            check=False,
+        )
+        return result.returncode == 0
 
 
 def make_filestore_adapter(context: ProjectContext, env: EnvironmentConfig) -> FilestoreBackend:

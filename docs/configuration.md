@@ -190,6 +190,42 @@ See [PostgreSQL WAL archiving and PITR](pitr.md) for server prerequisites,
 archive-command installation, recovery/cutover safety, retention, and expired
 coordination-lease recovery.
 
+## Filestore backends
+
+`filestore_backend` is optional, so existing projects keep the legacy behavior:
+a configured `filestore_volume` means `docker_volume`; otherwise
+`filestore_path` is `local`.
+
+An S3-compatible mirror uses only environment-variable references for provider
+credentials:
+
+```yaml
+environments:
+  production:
+    branch: main
+    domain: odoo.example.com
+    db_name: odoo_prod
+    filestore_path: /srv/odoo/filestore/odoo_prod
+    filestore_backend:
+      type: object_mirror
+      object_store:
+        bucket: acme-odoo-filestore
+        prefix: acme
+        region: eu-central-1
+        endpoint_env: ODOO_FILESTORE_S3_ENDPOINT
+        access_key_env: ODOO_FILESTORE_S3_ACCESS_KEY
+        secret_key_env: ODOO_FILESTORE_S3_SECRET_KEY
+        session_token_env: ODOO_FILESTORE_S3_SESSION_TOKEN
+```
+
+Use `type: posix_object_mount` with `mount_path` for a mounted object-storage
+gateway. Use `type: odoo_module` with `module_name` and `object_store` when an
+operator-selected Odoo module consumes object storage. odooctl does not assume
+or configure proprietary module APIs.
+
+See [Object-storage filestores](filestore-storage.md) for the full backend
+schema, checksum workflow, explicit cutover, download, and deletion controls.
+
 ## Schedule environment files
 
 The schedule generator supports `backup`, `backup-remote-verify`, `dr-drill`,

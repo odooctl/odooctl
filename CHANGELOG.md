@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backups, recovery-graph retention, isolated digest-pinned recovery,
   restore-to-new-database verification, crash-reconcilable OID-fenced cutover,
   and compare-and-swap cross-host leases with explicit expired-lease recovery.
+- A filestore backend and migration contract for local paths, Docker volumes,
+  POSIX-mounted object storage, S3-compatible content-addressed mirrors, and
+  operator-selected Odoo storage modules. The new `odooctl filestore` workflow
+  plans immutable inventories, syncs and reads back SHA-256 checksums, performs
+  compare-and-swap cutover, and keeps source and remote-content deletion behind
+  separate exact-confirmation controls.
 
 ### Security
 

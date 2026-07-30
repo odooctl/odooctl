@@ -64,6 +64,7 @@ def test_operation_kind_values():
     assert OperationKind.PITR_RESTORE.value == "pitr_restore"
     assert OperationKind.PITR_CUTOVER.value == "pitr_cutover"
     assert OperationKind.PITR_RECONCILE.value == "pitr_reconcile"
+    assert OperationKind.FILESTORE_MIGRATE.value == "filestore_migrate"
 
 
 def test_operation_status_values():

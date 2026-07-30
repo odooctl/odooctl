@@ -62,6 +62,8 @@ environments:
     domain: odoo.example.com
     db_name: odoo_prod
     filestore_path: /var/lib/odoo/filestore/odoo_prod
+    filestore_backend:
+      type: local
     update_modules:
       - sale
       - stock
@@ -70,6 +72,8 @@ environments:
     domain: staging.odoo.example.com
     db_name: odoo_staging
     filestore_path: /var/lib/odoo/filestore/odoo_staging
+    filestore_backend:
+      type: local
     clone_from: production
     sanitize: true
     update_modules:

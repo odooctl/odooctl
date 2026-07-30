@@ -15,6 +15,10 @@
   `best_effort`, or `disabled`, with byte verification, project-scoped object
   namespaces, and retention that never treats an unknown old upload as safe to
   delete.
+- **Filestore migrations verify every byte.** Local paths and Docker volumes
+  can migrate to a POSIX object mount or a project-scoped S3-compatible
+  generation; cutover is explicit and source deletion is a separate,
+  fully-confirmed operation.
 - **Staging clones you can trust.** `odooctl clone production staging` sanitizes by default: mail servers, crons, payment providers, queue jobs, OAuth secrets, IAP tokens, and webhook URLs are neutralized — including wiping Odoo 19 WebAuthn passkeys — so staging cannot email customers or charge cards.
 - **Adopt what you already run.** `odooctl import` detects an existing compose deployment read-only, previews the generated config, and only writes on `--yes` — then registers the project, runs preflight checks, and takes a safety backup.
 - **Protected environments.** Production-tier environments require elevated confirmation for destructive operations, in the CLI, API, and web UI alike.
@@ -80,6 +84,7 @@ odooctl status
 | Upgrade rehearsal (17 → 18 → 19) | `odooctl migrate matrix / scan / rehearse` | [docs/migration.md](docs/migration.md) |
 | Disaster recovery and provider snapshots | `odooctl dr drill`, `odooctl dr snapshot` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
 | PostgreSQL WAL archiving and PITR | `odooctl pitr` | [docs/pitr.md](docs/pitr.md) |
+| Object-storage filestore migration | `odooctl filestore` | [docs/filestore-storage.md](docs/filestore-storage.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
@@ -152,6 +157,9 @@ pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker
 - PITR restores into an isolated PostgreSQL runtime and a new verified database
   before an explicit, OID-fenced cutover. WAL recovery is database-only and
   never claims to rewind the Odoo filestore.
+- Filestore migration cutover re-verifies both the target and unchanged source;
+  source deletion is a separate operation requiring exact environment and
+  migration confirmations.
 - Clone sanitization is on by default and disables mail, fetchmail, crons, payment providers, queue jobs, and automation rules; scrubs OAuth/IAP/webhook credentials; deletes Odoo 19 passkeys; and rewrites and freezes `web.base.url`.
 - Secrets are referenced via environment variables (`password_env`) and redacted from logs, errors, and operation events; never commit secret values.
 - The API/runner split is structurally enforced: `odooctl security runner-check` verifies the API layer imports no privileged adapters.

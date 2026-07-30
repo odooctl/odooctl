@@ -6,6 +6,7 @@ from pathlib import Path
 from odooctl.metadata.models import (
     BackupManifest,
     DeploymentMetadata,
+    FilestoreMigrationManifest,
     PitrBaseBackupManifest,
     PitrRecoveryPlan,
     PitrRestoreMetadata,
@@ -30,6 +31,8 @@ class MetadataStore:
         ensure_dir(self.root / "pitr" / "wal")
         ensure_dir(self.root / "pitr" / "plans")
         ensure_dir(self.root / "pitr" / "restores")
+        ensure_dir(self.root / "filestore")
+        ensure_dir(self.root / "filestore" / "migrations")
 
     def save_deployment(self, metadata: DeploymentMetadata) -> Path:
         path = (
@@ -222,6 +225,76 @@ class MetadataStore:
         )
         self._write_atomic(path, metadata.model_dump_json(indent=2))
         return path
+
+    def save_filestore_migration(
+        self,
+        manifest: FilestoreMigrationManifest,
+    ) -> Path:
+        path = self._filestore_migration_path(manifest.migration_id)
+        self._guard_existing_pitr_identity(
+            path,
+            FilestoreMigrationManifest,
+            manifest,
+            (
+                "migration_id",
+                "project",
+                "environment",
+                "source_backend",
+                "target_backend",
+                "source_location",
+                "target_location",
+                "module_name",
+                "inventory_sha256",
+                "previous_active_migration_id",
+            ),
+        )
+        self._write_atomic(path, manifest.model_dump_json(indent=2))
+        return path
+
+    def get_filestore_migration(
+        self,
+        migration_id: str,
+    ) -> FilestoreMigrationManifest:
+        path = self._filestore_migration_path(migration_id)
+        manifest = self._load_pitr_model(
+            path,
+            FilestoreMigrationManifest,
+            "filestore migration manifest",
+        )
+        if manifest.migration_id != migration_id:
+            raise RuntimeError(
+                "Filestore migration identity mismatch: requested "
+                f"{migration_id!r}, payload contains {manifest.migration_id!r}"
+            )
+        return manifest
+
+    def list_filestore_migrations(
+        self,
+        *,
+        environment: str | None = None,
+    ) -> list[FilestoreMigrationManifest]:
+        if environment is not None:
+            self._safe_backup_component(environment, "environment")
+        manifests: list[FilestoreMigrationManifest] = []
+        root = self.root / "filestore" / "migrations"
+        for path in root.glob("*.json"):
+            manifest = self._load_pitr_model(
+                path,
+                FilestoreMigrationManifest,
+                "filestore migration manifest",
+            )
+            if manifest.migration_id != path.stem:
+                raise RuntimeError(
+                    f"Filestore migration file {path.name!r} contains "
+                    f"{manifest.migration_id!r}"
+                )
+            if environment is None or manifest.environment == environment:
+                manifests.append(manifest)
+        return sorted(
+            manifests,
+            key=lambda item: (item.created_at, item.migration_id),
+            reverse=True,
+        )
 
     def save_pitr_base_manifest(self, manifest: PitrBaseBackupManifest) -> Path:
         """Atomically create or update one physical base-backup manifest."""
@@ -616,6 +689,10 @@ class MetadataStore:
     def _pitr_restore_path(self, restore_id: str) -> Path:
         safe_id = self._safe_pitr_component(restore_id, "restore_id")
         return self.root / "pitr" / "restores" / f"{safe_id}.json"
+
+    def _filestore_migration_path(self, migration_id: str) -> Path:
+        safe_id = self._safe_backup_component(migration_id, "migration_id")
+        return self.root / "filestore" / "migrations" / f"{safe_id}.json"
 
     @staticmethod
     def _safe_pitr_component(value: str, label: str) -> str:

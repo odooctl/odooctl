@@ -1,4 +1,6 @@
 from __future__ import annotations
+import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
@@ -641,4 +643,181 @@ class PitrRestoreMetadata(BaseModel):
             )
         if self.cutover_finalized and not self.cutover:
             raise ValueError("cutover_finalized=true requires cutover=true")
+        return self
+
+
+class FilestoreObjectEntry(BaseModel):
+    """One canonical regular file in a filestore inventory."""
+
+    path: str
+    sha256: str
+    size: int = Field(ge=0)
+
+    @field_validator("path")
+    @classmethod
+    def path_must_be_canonical(cls, value: str) -> str:
+        return _artifact_path(value)
+
+    @field_validator("sha256")
+    @classmethod
+    def sha256_must_be_valid(cls, value: str, info) -> str:
+        return _sha256(value, info.field_name)
+
+
+def filestore_inventory_sha256(
+    entries: list[FilestoreObjectEntry],
+) -> str:
+    """Return the canonical digest that binds paths, sizes, and file hashes."""
+
+    payload = (
+        json.dumps(
+            [entry.model_dump(mode="json") for entry in entries],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+class FilestoreMigrationManifest(BaseModel):
+    """Durable, fail-closed state for a filestore backend migration."""
+
+    schema_version: Literal[1] = 1
+    migration_id: str
+    project: str
+    environment: str
+    source_backend: Literal["local", "docker_volume", "posix_object_mount"]
+    target_backend: Literal[
+        "object_mirror",
+        "posix_object_mount",
+        "odoo_module",
+    ]
+    source_location: str
+    target_location: str
+    module_name: str | None = None
+    previous_active_migration_id: str | None = None
+    entries: list[FilestoreObjectEntry]
+    inventory_sha256: str
+    total_size: int = Field(ge=0)
+    created_at: str = Field(default_factory=now_utc)
+    synced_at: str | None = None
+    verified_at: str | None = None
+    cutover_at: str | None = None
+    source_delete_started_at: str | None = None
+    source_deleted_at: str | None = None
+    status: Literal[
+        "planned",
+        "synced",
+        "verified",
+        "cutover",
+        "failed",
+    ] = "planned"
+    source_deleted: bool = False
+    last_error: str | None = None
+
+    @field_validator("migration_id", "environment")
+    @classmethod
+    def components_must_be_safe(cls, value: str, info) -> str:
+        return _safe_component(value, info.field_name)
+
+    @field_validator("previous_active_migration_id")
+    @classmethod
+    def optional_previous_migration_must_be_safe(
+        cls,
+        value: str | None,
+        info,
+    ) -> str | None:
+        return None if value is None else _safe_component(value, info.field_name)
+
+    @field_validator("module_name")
+    @classmethod
+    def optional_module_name_must_be_safe(
+        cls,
+        value: str | None,
+        info,
+    ) -> str | None:
+        return None if value is None else _safe_component(value, info.field_name)
+
+    @field_validator("project")
+    @classmethod
+    def labels_must_be_safe(cls, value: str, info) -> str:
+        return _safe_label(value, info.field_name)
+
+    @field_validator("source_location", "target_location")
+    @classmethod
+    def locations_must_be_safe(cls, value: str, info) -> str:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > 4096
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a non-empty location of at most "
+                "4096 characters without control characters"
+            )
+        return value
+
+    @field_validator("inventory_sha256")
+    @classmethod
+    def inventory_digest_must_be_valid(cls, value: str, info) -> str:
+        return _sha256(value, info.field_name)
+
+    @field_validator(
+        "created_at",
+        "synced_at",
+        "verified_at",
+        "cutover_at",
+        "source_delete_started_at",
+        "source_deleted_at",
+    )
+    @classmethod
+    def timestamps_must_be_utc(
+        cls,
+        value: str | None,
+        info,
+    ) -> str | None:
+        return None if value is None else _utc_timestamp(value, info.field_name)
+
+    @model_validator(mode="after")
+    def inventory_and_lifecycle_must_be_consistent(
+        self,
+    ) -> "FilestoreMigrationManifest":
+        paths = [entry.path for entry in self.entries]
+        if paths != sorted(paths) or len(paths) != len(set(paths)):
+            raise ValueError("filestore entries must be unique and strictly sorted")
+        if sum(entry.size for entry in self.entries) != self.total_size:
+            raise ValueError("filestore total_size does not match entry sizes")
+        if filestore_inventory_sha256(self.entries) != self.inventory_sha256:
+            raise ValueError(
+                "filestore inventory_sha256 does not match its entries"
+            )
+        if (self.target_backend == "odoo_module") != (
+            self.module_name is not None
+        ):
+            raise ValueError(
+                "odoo_module target and module_name must be recorded together"
+            )
+        if self.status in {"synced", "verified", "cutover"} and self.synced_at is None:
+            raise ValueError(f"{self.status} migration requires synced_at")
+        if self.status in {"verified", "cutover"} and self.verified_at is None:
+            raise ValueError(f"{self.status} migration requires verified_at")
+        if (self.status == "cutover") != (self.cutover_at is not None):
+            raise ValueError("cutover status and cutover_at must be recorded together")
+        if self.source_deleted != (self.source_deleted_at is not None):
+            raise ValueError(
+                "source_deleted and source_deleted_at must be recorded together"
+            )
+        if self.source_delete_started_at is not None and self.status != "cutover":
+            raise ValueError(
+                "source deletion can start only after completed cutover"
+            )
+        if self.source_deleted and self.source_delete_started_at is None:
+            raise ValueError(
+                "source deletion completion requires its durable start marker"
+            )
+        if self.source_deleted and self.status != "cutover":
+            raise ValueError("source deletion requires a completed explicit cutover")
         return self

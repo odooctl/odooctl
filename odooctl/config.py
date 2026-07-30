@@ -83,6 +83,175 @@ class RuntimeConfig(BaseModel):
     execution_mode: Literal["docker", "host"] = "host"
 
 
+class FilestoreObjectStoreConfig(BaseModel):
+    """S3-compatible object namespace used by filestore backends."""
+
+    bucket: str
+    prefix: str = ""
+    region: str | None = None
+    endpoint_env: str | None = None
+    access_key_env: str | None = None
+    secret_key_env: str | None = None
+    session_token_env: str | None = None
+    region_env: str | None = None
+    encryption_algorithm: Literal["AES256", "aws:kms"] | None = None
+    encryption_key_env: str | None = None
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(character) < 32 for character in normalized)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a non-empty S3 bucket name "
+                "without path separators"
+            )
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if (
+            value.startswith("/")
+            or "\\" in value
+            or any(ord(character) < 32 for character in value)
+            or any(part in {".", ".."} for part in PurePosixPath(normalized).parts)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a safe relative POSIX object prefix"
+            )
+        return normalized
+
+    @field_validator(
+        "endpoint_env",
+        "access_key_env",
+        "secret_key_env",
+        "session_token_env",
+        "region_env",
+        "encryption_key_env",
+    )
+    @classmethod
+    def env_references_must_be_names(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def credentials_and_encryption_must_be_complete(
+        self,
+    ) -> "FilestoreObjectStoreConfig":
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "filestore object_store access_key_env and secret_key_env "
+                "must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "filestore object_store session_token_env requires static credentials"
+            )
+        if self.encryption_key_env and self.encryption_algorithm != "aws:kms":
+            raise ValueError(
+                "filestore object_store encryption_key_env requires "
+                "encryption_algorithm 'aws:kms'"
+            )
+        return self
+
+
+class FilestoreBackendConfig(BaseModel):
+    """Explicit live/mirror backend contract for one Odoo environment."""
+
+    type: Literal[
+        "local",
+        "docker_volume",
+        "object_mirror",
+        "posix_object_mount",
+        "odoo_module",
+    ]
+    object_store: FilestoreObjectStoreConfig | None = None
+    mount_path: str | None = None
+    source_path: str | None = None
+    module_name: str | None = None
+
+    @field_validator("mount_path", "source_path")
+    @classmethod
+    def filesystem_paths_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        from pathlib import PurePosixPath
+
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        path = PurePosixPath(value)
+        if ".." in path.parts or not path.name:
+            raise ValueError(
+                f"{info.field_name} must reference a named directory "
+                "without '..' path segments"
+            )
+        return value
+
+    @field_validator("module_name")
+    @classmethod
+    def module_name_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, info.field_name)
+
+    @model_validator(mode="after")
+    def mode_fields_must_be_explicit(self) -> "FilestoreBackendConfig":
+        if self.type in {"object_mirror", "odoo_module"} and self.object_store is None:
+            raise ValueError(f"filestore backend {self.type} requires object_store")
+        if self.type == "posix_object_mount" and not self.mount_path:
+            raise ValueError("posix_object_mount requires mount_path")
+        if self.type == "odoo_module" and not self.module_name:
+            raise ValueError("odoo_module requires module_name")
+        if self.type in {"local", "docker_volume"} and any(
+            (self.object_store, self.mount_path, self.source_path, self.module_name)
+        ):
+            raise ValueError(
+                f"filestore backend {self.type} does not accept target integration fields"
+            )
+        if self.type == "object_mirror" and any(
+            (self.mount_path, self.module_name)
+        ):
+            raise ValueError(
+                "filestore backend object_mirror does not accept "
+                "mount_path or module_name"
+            )
+        if self.type == "posix_object_mount" and any(
+            (self.object_store, self.module_name)
+        ):
+            raise ValueError(
+                "filestore backend posix_object_mount does not accept "
+                "object_store or module_name"
+            )
+        if self.type == "odoo_module" and self.mount_path:
+            raise ValueError(
+                "filestore backend odoo_module does not accept mount_path"
+            )
+        return self
+
+
 class EnvironmentConfig(BaseModel):
     stack: str = "default"
     tier: Literal["production", "staging", "development", "qa"] | None = None
@@ -94,6 +263,7 @@ class EnvironmentConfig(BaseModel):
     db_name: str
     filestore_path: str
     filestore_volume: str | None = None
+    filestore_backend: FilestoreBackendConfig | None = None
     db_selector: bool = False
     clone_from: str | None = None
     sanitize: bool = False
@@ -137,6 +307,27 @@ class EnvironmentConfig(BaseModel):
                 f"{info.field_name} {display!r} must reference a named directory, not a root path"
             )
         return value
+
+    @model_validator(mode="after")
+    def filestore_backend_must_match_legacy_location(self) -> "EnvironmentConfig":
+        backend = self.filestore_backend
+        if backend is None:
+            return self
+        if backend.type == "local" and self.filestore_volume:
+            raise ValueError(
+                "filestore_backend.type local cannot be combined with filestore_volume"
+            )
+        if backend.type == "docker_volume" and not self.filestore_volume:
+            raise ValueError(
+                "filestore_backend.type docker_volume requires filestore_volume"
+            )
+        return self
+
+    @property
+    def effective_filestore_backend(self) -> str:
+        if self.filestore_backend is not None:
+            return self.filestore_backend.type
+        return "docker_volume" if self.filestore_volume else "local"
 
 
 class PostgresConfig(BaseModel):
@@ -211,6 +402,7 @@ class RemoteBackupConfig(BaseModel):
     endpoint_env: str | None = None
     access_key_env: str | None = None
     secret_key_env: str | None = None
+    session_token_env: str | None = None
     region_env: str | None = None
     encryption_algorithm: str | None = None
     encryption_key_env: str | None = None
@@ -255,6 +447,11 @@ class RemoteBackupConfig(BaseModel):
         if bool(self.access_key_env) != bool(self.secret_key_env):
             raise ValueError(
                 "remote backup access_key_env and secret_key_env must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "remote backup session_token_env requires access_key_env "
+                "and secret_key_env"
             )
         if self.encryption_key_env and not self.encryption_algorithm:
             raise ValueError(
@@ -806,6 +1003,7 @@ class OdooCtlConfig(BaseModel):
                 remote.endpoint_env,
                 remote.access_key_env,
                 remote.secret_key_env,
+                remote.session_token_env,
                 remote.region_env,
                 remote.encryption_key_env,
             ):
@@ -822,6 +1020,20 @@ class OdooCtlConfig(BaseModel):
                 self.pitr.destination.session_token_env,
                 self.pitr.destination.region_env,
                 self.pitr.destination.encryption_key_env,
+            ):
+                if value:
+                    refs.add(value)
+        for environment in self.environments.values():
+            backend = environment.filestore_backend
+            if backend is None or backend.object_store is None:
+                continue
+            for value in (
+                backend.object_store.endpoint_env,
+                backend.object_store.access_key_env,
+                backend.object_store.secret_key_env,
+                backend.object_store.session_token_env,
+                backend.object_store.region_env,
+                backend.object_store.encryption_key_env,
             ):
                 if value:
                     refs.add(value)
@@ -937,6 +1149,8 @@ environments:
     domain: odoo.example.com
     db_name: odoo_prod
     filestore_path: /var/lib/odoo/filestore/odoo_prod
+    filestore_backend:
+      type: local
     update_modules:
       - sale
       - stock
@@ -945,6 +1159,8 @@ environments:
     domain: staging.odoo.example.com
     db_name: odoo_staging
     filestore_path: /var/lib/odoo/filestore/odoo_staging
+    filestore_backend:
+      type: local
     clone_from: production
     sanitize: true
     update_modules:

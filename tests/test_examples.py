@@ -85,3 +85,28 @@ def test_pitr_docs_cover_prerequisites_and_fail_closed_cutover():
         "OWNER_STOPPED:LEASE_ID",
     ):
         assert required_text in pitr_docs
+
+
+def test_filestore_docs_cover_backends_and_explicit_deletion_controls():
+    root = Path(__file__).resolve().parents[1]
+    filestore_docs = (
+        root / "docs" / "filestore-storage.md"
+    ).read_text()
+
+    for required_text in (
+        "type: object_mirror",
+        "type: posix_object_mount",
+        "type: odoo_module",
+        "odooctl filestore migrate plan",
+        "odooctl filestore migrate sync",
+        "odooctl filestore migrate verify",
+        "odooctl filestore migrate cutover",
+        "--confirm-source-retained",
+        "odooctl filestore migrate download",
+        "odooctl filestore migrate delete-source",
+        "--delete-source",
+        "active.json",
+        "compare-and-swap",
+        "does not install the module",
+    ):
+        assert required_text in filestore_docs

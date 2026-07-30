@@ -74,6 +74,7 @@ _KIND_ACTION: dict[str, rbac.Action] = {
     "pitr_restore": rbac.Action.RESTORE,
     "pitr_cutover": rbac.Action.RESTORE,
     "pitr_reconcile": rbac.Action.BACKUP,
+    "filestore_migrate": rbac.Action.RESTORE,
     "migrate_rehearsal": rbac.Action.RESTORE,
 }
 
@@ -583,6 +584,200 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
                 ),
             },
         )
+
+    elif kind == OperationKind.FILESTORE_MIGRATE.value:
+        from odooctl.services.filestore_storage import (
+            cutover_migration,
+            delete_inactive_remote_marker,
+            delete_source_after_cutover,
+            download_migration,
+            plan_migration,
+            sync_migration,
+            verify_migration,
+        )
+
+        action = params.get("action")
+        if not isinstance(action, str):
+            raise ValueError(
+                "filestore_migrate requires a string 'action'"
+            )
+        migration_id = params.get("migration_id")
+        if action != "plan" and (
+            not isinstance(migration_id, str) or not migration_id
+        ):
+            raise ValueError(
+                "filestore_migrate requires a string 'migration_id'"
+            )
+
+        if action == "plan":
+            manifest = plan_migration(svc_ctx, env)
+            op_ctx.emit(
+                f"filestore migration planned: {manifest.migration_id}",
+                phase="filestore_plan",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "inventory_sha256": manifest.inventory_sha256,
+                    "object_count": len(manifest.entries),
+                    "total_size": manifest.total_size,
+                },
+            )
+        elif action == "sync":
+            manifest = sync_migration(svc_ctx, env, migration_id)
+            op_ctx.emit(
+                f"filestore migration synced: {manifest.migration_id}",
+                phase="filestore_sync",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "inventory_sha256": manifest.inventory_sha256,
+                },
+            )
+        elif action == "verify":
+            result = verify_migration(svc_ctx, env, migration_id)
+            op_ctx.emit(
+                f"filestore migration verified: {result.migration_id}",
+                phase="filestore_verify",
+                data={
+                    "migration_id": result.migration_id,
+                    "inventory_sha256": result.inventory_sha256,
+                    "object_count": result.object_count,
+                    "total_size": result.total_size,
+                },
+            )
+        elif action == "cutover":
+            confirm_environment = params.get("confirm_environment")
+            confirm_source_retained = params.get(
+                "confirm_source_retained"
+            )
+            if not isinstance(confirm_environment, str):
+                raise ValueError(
+                    "filestore cutover requires string "
+                    "'confirm_environment'"
+                )
+            if not isinstance(confirm_source_retained, bool):
+                raise ValueError(
+                    "filestore cutover requires boolean "
+                    "'confirm_source_retained'"
+                )
+            manifest = cutover_migration(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_environment=confirm_environment,
+                confirm_source_retained=confirm_source_retained,
+            )
+            op_ctx.emit(
+                f"filestore cutover complete: {manifest.migration_id}",
+                phase="filestore_cutover",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "source_retained": not manifest.source_deleted,
+                },
+            )
+        elif action == "download":
+            destination = params.get("destination")
+            if not isinstance(destination, str) or not destination:
+                raise ValueError(
+                    "filestore download requires string 'destination'"
+                )
+            destination_path = Path(destination)
+            if (
+                destination_path.is_absolute()
+                or ".." in destination_path.parts
+                or "\\" in destination
+                or any(ord(character) < 32 for character in destination)
+            ):
+                raise ValueError(
+                    "queued filestore download destination must be "
+                    "project-relative"
+                )
+            resolved_destination = (
+                svc_ctx.project.root / destination_path
+            ).resolve(strict=False)
+            if (
+                resolved_destination == svc_ctx.project.root
+                or not resolved_destination.is_relative_to(
+                    svc_ctx.project.root
+                )
+            ):
+                raise ValueError(
+                    "queued filestore download destination escapes the "
+                    "project root"
+                )
+            target = download_migration(
+                svc_ctx,
+                env,
+                migration_id,
+                resolved_destination,
+            )
+            op_ctx.emit(
+                f"filestore migration downloaded: {migration_id}",
+                phase="filestore_download",
+                data={
+                    "migration_id": migration_id,
+                    "destination": str(target),
+                },
+            )
+        elif action == "delete_source":
+            confirm_environment = params.get("confirm_environment")
+            confirm_migration_id = params.get(
+                "confirm_migration_id"
+            )
+            delete_source = params.get("delete_source")
+            if not isinstance(confirm_environment, str):
+                raise ValueError(
+                    "filestore source deletion requires string "
+                    "'confirm_environment'"
+                )
+            if not isinstance(confirm_migration_id, str):
+                raise ValueError(
+                    "filestore source deletion requires string "
+                    "'confirm_migration_id'"
+                )
+            if not isinstance(delete_source, bool):
+                raise ValueError(
+                    "filestore source deletion requires boolean "
+                    "'delete_source'"
+                )
+            manifest = delete_source_after_cutover(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_environment=confirm_environment,
+                confirm_migration_id=confirm_migration_id,
+                delete_source=delete_source,
+            )
+            op_ctx.emit(
+                f"filestore source deleted: {manifest.migration_id}",
+                phase="filestore_delete_source",
+                data={"migration_id": manifest.migration_id},
+            )
+        elif action == "delete_remote_marker":
+            confirm_migration_id = params.get(
+                "confirm_migration_id"
+            )
+            if not isinstance(confirm_migration_id, str):
+                raise ValueError(
+                    "filestore marker deletion requires string "
+                    "'confirm_migration_id'"
+                )
+            key = delete_inactive_remote_marker(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_migration_id=confirm_migration_id,
+            )
+            op_ctx.emit(
+                f"filestore remote marker deleted: {migration_id}",
+                phase="filestore_delete_remote_marker",
+                data={
+                    "migration_id": migration_id,
+                    "key": key,
+                },
+            )
+        else:
+            raise ValueError(
+                f"unsupported filestore_migrate action: {action!r}"
+            )
 
     elif kind == OperationKind.MIGRATE_REHEARSAL.value:
         from odooctl.migration.matrix import supported_paths
