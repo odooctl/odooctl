@@ -976,6 +976,47 @@ class GitOpsConfig(BaseModel):
         return value
 
 
+class LocalSimulationConfig(BaseModel):
+    enabled: bool = False
+    environment: str = "development"
+    output_path: str = ".odooctl/local"
+    cluster_prefix: str = "odooctl"
+    k3s_image: str = "rancher/k3s:v1.31.5-k3s1"
+    http_port: int = Field(default=8069, ge=1024, le=65535)
+    postgres_port: int = Field(default=5432, ge=1024, le=65535)
+    postgres_image: str = "postgres:16"
+    build_context: str = "."
+    dockerfile: str = "Dockerfile"
+    live_update_paths: list[str] = Field(default_factory=lambda: ["addons"])
+    rollout_timeout_seconds: int = Field(default=60, ge=10, le=600)
+
+    @field_validator("environment", "cluster_prefix")
+    @classmethod
+    def identifiers_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        return validate_identifier(value, f"local_simulation.{info.field_name}")
+
+    @field_validator("output_path", "build_context", "dockerfile")
+    @classmethod
+    def project_paths_must_be_relative(cls, value: str, info: ValidationInfo) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(
+                f"local_simulation.{info.field_name} must be project-relative"
+            )
+        return value
+
+    @field_validator("live_update_paths")
+    @classmethod
+    def live_update_paths_must_be_relative(cls, value: list[str]) -> list[str]:
+        for raw in value:
+            path = Path(raw)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(
+                    "local_simulation.live_update_paths must be project-relative"
+                )
+        return value
+
+
 class OdooCtlConfig(BaseModel):
     project: ProjectConfig
     runtime: RuntimeConfig | KubernetesRuntimeConfig = Field(
@@ -991,6 +1032,9 @@ class OdooCtlConfig(BaseModel):
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
     gitops: GitOpsConfig = Field(default_factory=GitOpsConfig)
+    local_simulation: LocalSimulationConfig = Field(
+        default_factory=LocalSimulationConfig
+    )
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
 
     @field_validator("runtime", mode="before")
@@ -1056,6 +1100,16 @@ class OdooCtlConfig(BaseModel):
                 raise ValueError(
                     "gitops.preview_source_environment "
                     f"{self.gitops.preview_source_environment!r} is not defined"
+                )
+        if self.local_simulation.enabled:
+            if self.runtime.type != "kubernetes":
+                raise ValueError(
+                    "local_simulation.enabled requires runtime.type: kubernetes"
+                )
+            if self.local_simulation.environment not in self.environments:
+                raise ValueError(
+                    "local_simulation.environment "
+                    f"{self.local_simulation.environment!r} is not defined"
                 )
 
         for name, env in self.environments.items():

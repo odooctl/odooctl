@@ -77,3 +77,5 @@ availability and identifies externally managed PostgreSQL separately.
 
 See [Progressive deployment](progressive-deployment.md) for rolling,
 blue/green, NGINX canary, readiness, and automated rollback behavior.
+For a disposable cluster using these same resources, see
+[k3d + Tilt local simulation](local-simulation.md).

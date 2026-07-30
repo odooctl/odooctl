@@ -34,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   revision-owned candidates, stable-Service promotion, Odoo readiness/public
   health gates, native or selector-based automated rollback, and explicit
   shared-database schema-migration limitations.
+- Reproducible, path-scoped k3d clusters that reuse production Kubernetes
+  resources, add disposable PostgreSQL, generate grouped Tilt resources with
+  image rebuild/live sync, exercise deploy/native neutralize/backup/restore/
+  progressive rollback in a smoke lifecycle, and require an exact ownership
+  record for teardown.
 - Policy-controlled remote portable backups with `required`, `best_effort`,
   and `disabled` modes; post-upload byte verification; project-scoped S3
   namespaces; globally unique 24-hex-suffixed backup IDs; UTC

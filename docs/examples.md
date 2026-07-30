@@ -60,3 +60,12 @@ odooctl rollback production --mode full --backup production_2026-05-24_1600 --co
 ```
 
 Production deploys back up data first, while full rollback restores the backed-up database and filestore.
+
+## Additional platform examples
+
+- `examples/kubernetes/odooctl.yml` — production Kubernetes, GitOps previews,
+  and progressive rollout policies.
+- `examples/gitops/` — protected GitHub Actions publishing and an Argo CD
+  ApplicationSet.
+- `examples/k3d/` — Dockerfile, addons directory, and configuration for the
+  owned k3d + Tilt production simulation.
