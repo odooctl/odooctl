@@ -87,6 +87,9 @@ def render_kubernetes_resources(
         }
         for name, ref in sorted(runtime.secret_refs.items())
     ]
+    ingress_annotations = dict(annotations or {})
+    if runtime.ingress_class:
+        ingress_annotations["kubernetes.io/ingress.class"] = runtime.ingress_class
     resources: list[dict[str, Any]] = [
         {
             "apiVersion": "v1",
@@ -214,10 +217,9 @@ def render_kubernetes_resources(
                 "name": workload,
                 "namespace": namespace,
                 "labels": labels,
-                **({"annotations": annotations} if annotations else {}),
                 **(
-                    {"annotations": {"kubernetes.io/ingress.class": runtime.ingress_class}}
-                    if runtime.ingress_class
+                    {"annotations": ingress_annotations}
+                    if ingress_annotations
                     else {}
                 ),
             },

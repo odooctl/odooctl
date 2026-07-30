@@ -31,6 +31,9 @@ Key sections:
 - Per-environment `rollout_strategy`, `canary_percent`, and `auto_rollback`
   control progressive delivery; see
   [Progressive deployment](progressive-deployment.md).
+- `local_simulation`: pinned k3d/PostgreSQL images, project-scoped ports,
+  Docker build inputs, Tilt live-update paths, and smoke timeout; see
+  [Local production simulation](local-simulation.md).
 - `redaction`: log-redaction policy for sensitive environment values.
 
 ## Docker vs host execution

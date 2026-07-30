@@ -22,6 +22,7 @@ from odooctl.commands import (
     import_cmd,
     init as init_cmd,
     logs as logs_cmd,
+    local as local_cmd,
     migrate as migrate_cmd,
     ops as ops_cmd,
     pitr as pitr_cmd,
@@ -40,7 +41,7 @@ from odooctl.commands import (
 )
 
 app = typer.Typer(
-    help="Odoo-aware deployment CLI for self-hosted Docker Compose projects.",
+    help="Odoo-aware deployment CLI for self-hosted Compose and Kubernetes projects.",
 )
 app.add_typer(project_cmd.app, name="project")
 app.add_typer(env_cmd.app, name="env")
@@ -55,6 +56,7 @@ app.add_typer(filestore_cmd.app, name="filestore")
 app.add_typer(migrate_cmd.app, name="migrate")
 app.add_typer(backup_remote_cmd.app, name="backup-remote")
 app.add_typer(gitops_cmd.app, name="gitops")
+app.add_typer(local_cmd.app, name="local")
 
 
 def _context_config(ctx: typer.Context, config: str) -> str:

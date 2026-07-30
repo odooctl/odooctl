@@ -1,5 +1,5 @@
 site_name: odooctl
-site_description: CLI-first, Odoo-aware control plane for self-hosted Odoo on Docker Compose
+site_description: CLI-first, Odoo-aware control plane for self-hosted Odoo on Compose and Kubernetes
 site_url: https://odooctl.github.io/docs/
 repo_url: https://github.com/odooctl/odooctl
 repo_name: odooctl/odooctl
@@ -63,6 +63,7 @@ nav:
       - Kubernetes runtime: kubernetes.md
       - GitOps & PR environments: gitops.md
       - Progressive deployment: progressive-deployment.md
+      - k3d + Tilt simulation: local-simulation.md
       - Domains & SSL: domains-ssl.md
       - Catalog: catalog.md
   - Security:

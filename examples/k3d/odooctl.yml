@@ -1,0 +1,46 @@
+project:
+  name: odooctl-k3d-demo
+  odoo_version: "19.0"
+
+runtime:
+  type: kubernetes
+  namespace_template: "{project}-{environment}"
+  image_pull_policy: IfNotPresent
+
+postgres:
+  host: postgres
+  user: odoo
+  password_env: ODOO_DB_PASSWORD
+
+odoo:
+  image: odooctl-k3d-demo:19
+  service: odoo
+  cli_command: odoo
+  db_host: postgres
+  db_user: odoo
+
+local_simulation:
+  enabled: true
+  environment: development
+  output_path: .odooctl/local
+  cluster_prefix: odooctl
+  k3s_image: rancher/k3s:v1.31.5-k3s1
+  http_port: 18069
+  postgres_port: 15432
+  postgres_image: postgres:16
+  build_context: .
+  dockerfile: Dockerfile
+  live_update_paths: [addons]
+  rollout_timeout_seconds: 90
+
+environments:
+  development:
+    tier: development
+    branch: develop
+    scheme: http
+    domain: odoo.localhost
+    db_name: odooctl_development
+    filestore_path: odooctl_development
+    filestore_volume: development-filestore
+    rollout_strategy: rolling
+    auto_rollback: true

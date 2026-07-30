@@ -93,6 +93,7 @@ odooctl status
 | Kubernetes runtime and production manifests | `odooctl deploy`, `odooctl logs`, `odooctl status` | [docs/kubernetes.md](docs/kubernetes.md) |
 | GitOps and expiring PR environments | `odooctl gitops` | [docs/gitops.md](docs/gitops.md) |
 | Progressive rollout and automated rollback | `odooctl deploy`, `odooctl promote` | [docs/progressive-deployment.md](docs/progressive-deployment.md) |
+| k3d + Tilt production simulation | `odooctl local` | [docs/local-simulation.md](docs/local-simulation.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
