@@ -123,6 +123,7 @@ class KubernetesRuntimeConfig(BaseModel):
     filestore_claim_size: str = "10Gi"
     storage_class: str | None = None
     postgres_mode: Literal["external", "cloudnativepg"] = "external"
+    canary_provider: Literal["none", "nginx"] = "none"
     secret_refs: dict[str, KubernetesSecretKeyRef] = Field(default_factory=dict)
 
     @field_validator("context", "ingress_class")
@@ -366,6 +367,9 @@ class EnvironmentConfig(BaseModel):
     promotes_to: str | None = None
     auto_deploy: bool = False
     last_deployed_commit: str | None = None
+    rollout_strategy: Literal["recreate", "rolling", "blue_green", "canary"] = "recreate"
+    canary_percent: int = Field(default=10, ge=1, le=50)
+    auto_rollback: bool = True
 
     @field_validator("db_name", "filestore_volume")
     @classmethod
@@ -1055,6 +1059,20 @@ class OdooCtlConfig(BaseModel):
                 )
 
         for name, env in self.environments.items():
+            if self.runtime.type == "docker_compose" and env.rollout_strategy != "recreate":
+                raise ValueError(
+                    f"Environment '{name}' rollout_strategy {env.rollout_strategy!r} "
+                    "is not supported by docker_compose; supported: recreate"
+                )
+            if (
+                self.runtime.type == "kubernetes"
+                and env.rollout_strategy == "canary"
+                and self.runtime.canary_provider != "nginx"
+            ):
+                raise ValueError(
+                    f"Environment '{name}' canary rollout requires "
+                    "runtime.canary_provider: nginx"
+                )
             if name == "production" and env.clone_from:
                 raise ValueError(
                     "Environment 'production' cannot be a clone target; "

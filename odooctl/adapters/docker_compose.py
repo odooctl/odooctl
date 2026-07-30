@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from odooctl.utils.shell import run, run_capture_bytes, run_pipe_stdin
 from odooctl.utils.shell import CommandResult
+from odooctl.adapters.runtime import RolloutState, RolloutStrategy
 
 class DockerComposeAdapter:
     runtime_type = "docker_compose"
@@ -21,6 +22,40 @@ class DockerComposeAdapter:
 
     def up(self, service: str | None = None) -> None:
         run(self._cmd("up", "-d", *([service] if service else [])), cwd=self.project_dir, stream=True)
+
+    def supports_rollout(self, strategy: RolloutStrategy) -> bool:
+        return strategy == "recreate"
+
+    def begin_rollout(
+        self,
+        workload: str,
+        *,
+        strategy: RolloutStrategy,
+        revision: str,
+        canary_percent: int = 10,
+    ) -> RolloutState:
+        if not self.supports_rollout(strategy):
+            raise RuntimeError(
+                f"docker_compose does not support rollout strategy {strategy!r}; "
+                "supported: recreate"
+            )
+        self.pull(workload)
+        self.up(workload)
+        return RolloutState(
+            strategy=strategy,
+            workload=workload,
+            command_workload=workload,
+            details={"revision": revision},
+        )
+
+    def promote_rollout(self, state: RolloutState) -> None:
+        state.promoted = True
+
+    def finalize_rollout(self, state: RolloutState) -> None:
+        return None
+
+    def rollback_rollout(self, state: RolloutState) -> None:
+        self.restart(state.workload)
 
     def restart(self, service: str) -> None:
         run(self._cmd("restart", service), cwd=self.project_dir, stream=True)

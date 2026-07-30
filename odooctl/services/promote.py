@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.reverse_proxy import public_url
 from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
+from odooctl.adapters.runtime import RolloutState
 from odooctl.metadata.models import DeploymentMetadata
 from odooctl.metadata.store import MetadataStore
 from odooctl.odoo.healthcheck import check_url, with_db_selector
@@ -117,17 +118,39 @@ def run_promote(
     status = "failed"
     message = None
     pre_promote_commit = None
+    rollout_state: RolloutState | None = None
+    rollout_rollback = None
 
     try:
         run(["git", "fetch", "--all"], stream=True, cwd=str(ctx.project.root))
         run(["git", "checkout", selected_branch], stream=True, cwd=str(ctx.project.root))
         pre_promote_commit = git_commit(ctx.project.root)
         run(["git", "merge", "--ff-only", src_env.branch], stream=True, cwd=str(ctx.project.root))
-        compose.pull(cfg.odoo.service)
-        compose.up(cfg.odoo.service)
+        if hasattr(compose, "begin_rollout"):
+            revision = git_commit(ctx.project.root) or "unknown"
+            rollout_state = compose.begin_rollout(
+                cfg.odoo.service,
+                strategy=tgt_env.rollout_strategy,
+                revision=revision,
+                canary_percent=tgt_env.canary_percent,
+            )
+            command_workload = rollout_state.command_workload
+        else:
+            compose.pull(cfg.odoo.service)
+            compose.up(cfg.odoo.service)
+            command_workload = cfg.odoo.service
+        if tgt_env.update_modules and tgt_env.rollout_strategy in {
+            "rolling",
+            "blue_green",
+            "canary",
+        }:
+            print(
+                "[promote] warning: module updates mutate the shared database; "
+                "application rollback cannot guarantee schema compatibility"
+            )
         update_modules_compose(
             compose,
-            cfg.odoo.service,
+            command_workload,
             tgt_env.db_name,
             tgt_env.update_modules,
             cli_command=cfg.odoo.cli_command,
@@ -136,6 +159,15 @@ def run_promote(
             db_password_env=cfg.odoo.db_password_env,
             config_path=cfg.odoo.config_path,
         )
+        if rollout_state and rollout_state.strategy == "canary":
+            check_url(
+                target_url,
+                timeout=cfg.healthcheck.timeout_seconds,
+                retries=cfg.healthcheck.retries,
+                interval=cfg.healthcheck.interval_seconds,
+            )
+        if rollout_state:
+            compose.promote_rollout(rollout_state)
         # 5. Healthcheck target
         print("[promote] verify target")
         check_url(
@@ -144,12 +176,26 @@ def run_promote(
             retries=cfg.healthcheck.retries,
             interval=cfg.healthcheck.interval_seconds,
         )
+        if rollout_state:
+            compose.finalize_rollout(rollout_state)
         status = "success"
         print("[promote] done")
     except Exception as exc:
+        failed_state = getattr(exc, "state", None)
+        if rollout_state is None and isinstance(failed_state, RolloutState):
+            rollout_state = failed_state
         message = str(exc)
         print(f"[promote] failed: {message}")
         rollback_ok = True
+        if rollout_state is not None and tgt_env.auto_rollback:
+            try:
+                compose.rollback_rollout(rollout_state)
+                rollout_rollback = "success"
+                print("[promote] workload rollback complete")
+            except Exception as rollout_exc:
+                rollout_rollback = "failed"
+                rollback_ok = False
+                print(f"[promote] WARNING: workload rollback failed: {rollout_exc}")
 
         # Data rollback
         print(f"[promote] rollback: restoring {target} data from {backup_id}")
@@ -193,6 +239,8 @@ def run_promote(
                 status=status,
                 health_check_url=target_url,
                 message=message,
+                rollout_strategy=tgt_env.rollout_strategy,
+                rollout_rollback=rollout_rollback,
             )
         )
 

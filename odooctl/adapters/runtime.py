@@ -7,12 +7,33 @@ orchestrator.  Runtime implementations intentionally expose workload concepts
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from odooctl.utils.shell import CommandResult
 
 if TYPE_CHECKING:
     from odooctl.context import ProjectContext
+
+
+RolloutStrategy = Literal["recreate", "rolling", "blue_green", "canary"]
+
+
+@dataclass
+class RolloutState:
+    strategy: RolloutStrategy
+    workload: str
+    command_workload: str
+    candidate_workload: str | None = None
+    previous_selector: dict[str, str] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
+    promoted: bool = False
+
+
+class RolloutFailed(RuntimeError):
+    def __init__(self, message: str, state: RolloutState):
+        super().__init__(message)
+        self.state = state
 
 
 @runtime_checkable
@@ -26,6 +47,23 @@ class RuntimeAdapter(Protocol):
     def build(self, workload: str | None = None) -> None: ...
 
     def up(self, workload: str | None = None) -> None: ...
+
+    def supports_rollout(self, strategy: RolloutStrategy) -> bool: ...
+
+    def begin_rollout(
+        self,
+        workload: str,
+        *,
+        strategy: RolloutStrategy,
+        revision: str,
+        canary_percent: int = 10,
+    ) -> RolloutState: ...
+
+    def promote_rollout(self, state: RolloutState) -> None: ...
+
+    def finalize_rollout(self, state: RolloutState) -> None: ...
+
+    def rollback_rollout(self, state: RolloutState) -> None: ...
 
     def restart(self, workload: str) -> None: ...
 

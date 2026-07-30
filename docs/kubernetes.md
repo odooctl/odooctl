@@ -74,3 +74,6 @@ The runtime writes the canonical multi-document manifest to:
 module updates, native neutralization, and filestore streaming use
 `kubectl logs` or `kubectl exec`. `status` reports owned Deployment
 availability and identifies externally managed PostgreSQL separately.
+
+See [Progressive deployment](progressive-deployment.md) for rolling,
+blue/green, NGINX canary, readiness, and automated rollback behavior.
