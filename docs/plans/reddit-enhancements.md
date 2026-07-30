@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: IN PROGRESS  
 Branch: `codex/reddit-enhancements`
 
-Implemented through: R8 (GitOps and ephemeral pull-request environments)
+Implemented through: R9 (progressive deployment and automated rollback)
 
 ## Why this program exists
 

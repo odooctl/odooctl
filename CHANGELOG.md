@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environments with isolated namespace/domain/database/filestore identities,
   fail-closed neutralized clone initialization, expiry metadata, guarded
   cleanup, and GitHub Actions/Argo CD examples.
+- Validated recreate, rolling, blue/green, and NGINX canary strategies with
+  revision-owned candidates, stable-Service promotion, Odoo readiness/public
+  health gates, native or selector-based automated rollback, and explicit
+  shared-database schema-migration limitations.
 - Policy-controlled remote portable backups with `required`, `best_effort`,
   and `disabled` modes; post-upload byte verification; project-scoped S3
   namespaces; globally unique 24-hex-suffixed backup IDs; UTC

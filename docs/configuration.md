@@ -28,6 +28,9 @@ Key sections:
 - `sanitization`: native Odoo neutralization policy, SQL extension files, and
   built-in staging safety toggles.
 - `healthcheck`: path and retry timing used after clone/deploy/restore operations.
+- Per-environment `rollout_strategy`, `canary_percent`, and `auto_rollback`
+  control progressive delivery; see
+  [Progressive deployment](progressive-deployment.md).
 - `redaction`: log-redaction policy for sensitive environment values.
 
 ## Docker vs host execution

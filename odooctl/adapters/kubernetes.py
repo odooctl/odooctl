@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from odooctl.config import KubernetesRuntimeConfig
+from odooctl.adapters.runtime import RolloutFailed, RolloutState, RolloutStrategy
 from odooctl.utils.paths import ensure_dir
 from odooctl.utils.shell import CommandResult, run, run_capture_bytes, run_pipe_stdin
 
@@ -21,6 +23,7 @@ MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 PROJECT_LABEL = "odooctl.dev/project"
 ENVIRONMENT_LABEL = "odooctl.dev/environment"
 COMPONENT_LABEL = "app.kubernetes.io/component"
+REVISION_LABEL = "odooctl.dev/revision"
 
 
 def kubernetes_name(value: str) -> str:
@@ -126,6 +129,17 @@ def render_kubernetes_resources(
             },
             "spec": {
                 "replicas": runtime.replicas,
+                "strategy": (
+                    {"type": "Recreate"}
+                    if env.rollout_strategy == "recreate"
+                    else {
+                        "type": "RollingUpdate",
+                        "rollingUpdate": {
+                            "maxUnavailable": 0,
+                            "maxSurge": 1,
+                        },
+                    }
+                ),
                 "selector": {"matchLabels": selector_labels},
                 "template": {
                     "metadata": {"labels": labels},
@@ -285,6 +299,7 @@ class KubernetesAdapter:
         *,
         namespaced: bool,
         absent_ok: bool,
+        expected_labels: dict[str, str] | None = None,
     ) -> bool:
         result = run(
             self._cmd("get", kind, name, "-o", "json", namespaced=namespaced),
@@ -307,9 +322,10 @@ class KubernetesAdapter:
             raise RuntimeError(
                 f"Could not parse ownership metadata for {kind}/{name}"
             ) from exc
+        expected_ownership = expected_labels or self._expected_labels
         mismatches = {
             key: (labels.get(key), expected)
-            for key, expected in self._expected_labels.items()
+            for key, expected in expected_ownership.items()
             if labels.get(key) != expected
         }
         if mismatches:
@@ -344,6 +360,290 @@ class KubernetesAdapter:
     def pull(self, workload: str | None = None) -> None:
         # Kubernetes pulls according to imagePullPolicy during apply/rollout.
         return None
+
+    def supports_rollout(self, strategy: RolloutStrategy) -> bool:
+        if strategy in {"recreate", "rolling", "blue_green"}:
+            return True
+        return strategy == "canary" and self.config.canary_provider == "nginx"
+
+    def _service_selector(self, workload: str) -> dict[str, str]:
+        self._assert_owned_or_absent(
+            "service",
+            workload,
+            namespaced=True,
+            absent_ok=False,
+        )
+        result = run(
+            self._cmd("get", "service", workload, "-o", "json"),
+            cwd=str(self.project.root),
+            stream=False,
+        )
+        try:
+            selector = json.loads(result.stdout)["spec"]["selector"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"Could not read selector for service/{workload}"
+            ) from exc
+        if not isinstance(selector, dict) or not selector:
+            raise RuntimeError(f"service/{workload} has no stable selector")
+        return {str(key): str(value) for key, value in selector.items()}
+
+    def _candidate_resources(
+        self,
+        workload: str,
+        revision: str,
+        strategy: RolloutStrategy,
+        canary_percent: int,
+    ) -> tuple[str, dict[str, str], list[dict[str, Any]]]:
+        candidate = kubernetes_name(f"{workload}-{revision[:8]}")
+        canonical = render_kubernetes_resources(self.project, self.environment)
+        deployment = deepcopy(
+            next(item for item in canonical if item["kind"] == "Deployment")
+        )
+        service = deepcopy(next(item for item in canonical if item["kind"] == "Service"))
+        candidate_labels = ownership_labels(
+            self.project.config.project.name,
+            self.environment,
+            "odoo-candidate",
+        )
+        candidate_labels[REVISION_LABEL] = revision[:16]
+        candidate_selector = {
+            PROJECT_LABEL: candidate_labels[PROJECT_LABEL],
+            ENVIRONMENT_LABEL: candidate_labels[ENVIRONMENT_LABEL],
+            COMPONENT_LABEL: candidate_labels[COMPONENT_LABEL],
+            REVISION_LABEL: candidate_labels[REVISION_LABEL],
+        }
+        deployment["metadata"]["name"] = candidate
+        deployment["metadata"]["labels"] = candidate_labels
+        deployment["spec"]["selector"]["matchLabels"] = candidate_selector
+        deployment["spec"]["template"]["metadata"]["labels"] = candidate_labels
+        deployment["spec"]["strategy"] = {
+            "type": "RollingUpdate",
+            "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+        }
+        service["metadata"]["name"] = candidate
+        service["metadata"]["labels"] = candidate_labels
+        service["spec"]["selector"] = candidate_selector
+        resources = [deployment, service]
+        if strategy == "canary":
+            ingress = deepcopy(
+                next(item for item in canonical if item["kind"] == "Ingress")
+            )
+            ingress["metadata"]["name"] = candidate
+            ingress["metadata"]["labels"] = candidate_labels
+            ingress_annotations = ingress["metadata"].setdefault("annotations", {})
+            ingress_annotations.update(
+                {
+                    "nginx.ingress.kubernetes.io/canary": "true",
+                    "nginx.ingress.kubernetes.io/canary-weight": str(canary_percent),
+                }
+            )
+            backend = ingress["spec"]["rules"][0]["http"]["paths"][0]["backend"]
+            backend["service"]["name"] = candidate
+            resources.append(ingress)
+        return candidate, candidate_selector, resources
+
+    def _apply_rollout_resources(
+        self,
+        candidate: str,
+        resources: list[dict[str, Any]],
+        expected_labels: dict[str, str],
+    ) -> Path:
+        kinds = {
+            "Deployment": "deployment",
+            "Service": "service",
+            "Ingress": "ingress",
+        }
+        for resource in resources:
+            self._assert_owned_or_absent(
+                kinds[resource["kind"]],
+                resource["metadata"]["name"],
+                namespaced=True,
+                absent_ok=True,
+                expected_labels=expected_labels,
+            )
+        path = (
+            self.project.resolve_path(self.config.manifests_path)
+            / self.environment
+            / "rollouts"
+            / f"{candidate}.yaml"
+        )
+        ensure_dir(path.parent)
+        path.write_text(
+            yaml.safe_dump_all(resources, sort_keys=False),
+            encoding="utf-8",
+        )
+        run(
+            self._cmd("apply", "-f", str(path)),
+            cwd=str(self.project.root),
+            stream=True,
+        )
+        return path
+
+    def begin_rollout(
+        self,
+        workload: str,
+        *,
+        strategy: RolloutStrategy,
+        revision: str,
+        canary_percent: int = 10,
+    ) -> RolloutState:
+        if not self.supports_rollout(strategy):
+            supported = ["recreate", "rolling", "blue_green"]
+            if self.config.canary_provider == "nginx":
+                supported.append("canary")
+            raise RuntimeError(
+                f"kubernetes does not support rollout strategy {strategy!r} "
+                f"with this configuration; supported: {', '.join(supported)}"
+            )
+        name = kubernetes_name(workload)
+        if strategy in {"recreate", "rolling"}:
+            state = RolloutState(
+                strategy=strategy,
+                workload=name,
+                command_workload=name,
+                details={"revision": revision},
+            )
+            try:
+                self.up(name)
+            except Exception as exc:
+                raise RolloutFailed(str(exc), state) from exc
+            return state
+        previous_selector = self._service_selector(name)
+        candidate, candidate_selector, resources = self._candidate_resources(
+            name,
+            revision,
+            strategy,
+            canary_percent,
+        )
+        candidate_labels = resources[0]["metadata"]["labels"]
+        state = RolloutState(
+            strategy=strategy,
+            workload=name,
+            command_workload=candidate,
+            candidate_workload=candidate,
+            previous_selector=previous_selector,
+            details={
+                "revision": revision,
+                "candidate_selector": candidate_selector,
+            },
+        )
+        try:
+            manifest = self._apply_rollout_resources(
+                candidate,
+                resources,
+                candidate_labels,
+            )
+            state.details["manifest"] = str(manifest)
+            run(
+                self._cmd("rollout", "status", f"deployment/{candidate}"),
+                cwd=str(self.project.root),
+                stream=True,
+            )
+        except Exception as exc:
+            raise RolloutFailed(str(exc), state) from exc
+        return state
+
+    def _patch_service_selector(
+        self,
+        workload: str,
+        selector: dict[str, str],
+    ) -> None:
+        self._assert_owned_or_absent(
+            "service",
+            workload,
+            namespaced=True,
+            absent_ok=False,
+        )
+        patch = json.dumps({"spec": {"selector": selector}}, separators=(",", ":"))
+        run(
+            self._cmd(
+                "patch",
+                "service",
+                workload,
+                "--type",
+                "merge",
+                "-p",
+                patch,
+            ),
+            cwd=str(self.project.root),
+            stream=True,
+        )
+
+    def promote_rollout(self, state: RolloutState) -> None:
+        if state.candidate_workload:
+            selector = state.details.get("candidate_selector")
+            if not isinstance(selector, dict):
+                raise RuntimeError("Progressive rollout has no candidate selector")
+            self._patch_service_selector(state.workload, selector)
+        state.promoted = True
+
+    def _delete_candidate(self, state: RolloutState) -> None:
+        candidate = state.candidate_workload
+        if not candidate:
+            return
+        expected = ownership_labels(
+            self.project.config.project.name,
+            self.environment,
+            "odoo-candidate",
+        )
+        expected[REVISION_LABEL] = str(state.details["revision"])[:16]
+        kinds = ["deployment", "service"]
+        if state.strategy == "canary":
+            kinds.append("ingress")
+        for kind in kinds:
+            exists = self._assert_owned_or_absent(
+                kind,
+                candidate,
+                namespaced=True,
+                absent_ok=True,
+                expected_labels=expected,
+            )
+            if exists:
+                run(
+                    self._cmd("delete", kind, candidate),
+                    cwd=str(self.project.root),
+                    stream=True,
+                )
+
+    def finalize_rollout(self, state: RolloutState) -> None:
+        if state.candidate_workload:
+            # Converge back to the canonical workload name only after the
+            # candidate has passed readiness and the public health check.
+            self.up(state.workload)
+            self._delete_candidate(state)
+
+    def rollback_rollout(self, state: RolloutState) -> None:
+        if state.strategy == "rolling":
+            self._assert_workload_owned(state.workload)
+            run(
+                self._cmd(
+                    "rollout",
+                    "undo",
+                    f"deployment/{state.workload}",
+                ),
+                cwd=str(self.project.root),
+                stream=True,
+            )
+            run(
+                self._cmd(
+                    "rollout",
+                    "status",
+                    f"deployment/{state.workload}",
+                ),
+                cwd=str(self.project.root),
+                stream=True,
+            )
+            return
+        if state.candidate_workload:
+            if state.promoted:
+                self._patch_service_selector(
+                    state.workload,
+                    state.previous_selector,
+                )
+            self._delete_candidate(state)
+            return
+        self.restart(state.workload)
 
     def build(self, workload: str | None = None) -> None:
         raise RuntimeError(

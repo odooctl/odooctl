@@ -9,6 +9,7 @@ runtime:
   manifests_path: .odooctl/rendered/kubernetes
   replicas: 2
   postgres_mode: external
+  canary_provider: nginx
   secret_refs:
     PGPASSWORD:
       name: odoo-database
@@ -43,6 +44,8 @@ environments:
     db_name: acme_production
     filestore_path: acme_production
     filestore_volume: odoo-filestore
+    rollout_strategy: blue_green
+    auto_rollback: true
   staging:
     tier: staging
     branch: staging
@@ -52,3 +55,6 @@ environments:
     filestore_volume: odoo-staging-filestore
     clone_from: production
     sanitize: true
+    rollout_strategy: canary
+    canary_percent: 10
+    auto_rollback: true

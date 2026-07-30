@@ -167,6 +167,8 @@ class DeploymentMetadata(BaseModel):
     status: str
     health_check_url: str | None = None
     message: str | None = None
+    rollout_strategy: str = "recreate"
+    rollout_rollback: str | None = None
 
 
 class SanitizationMetadata(BaseModel):
