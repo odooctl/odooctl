@@ -509,6 +509,171 @@ def test_snapshot_api_exposes_exact_restore_confirmation_identity(
     assert detail.json()["source_resource_id"] == "424242"
 
 
+def _enable_pitr(project_dir):
+    with (project_dir / "odooctl.yml").open("a") as handle:
+        handle.write(
+            """
+pitr:
+  enabled: true
+  environment: production
+  cluster_id: primary-cluster
+  system_identifier: "7429384729384729"
+  recovery_image: postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  filestore_policy: database_only
+  destination:
+    bucket: pitr-archive
+    prefix: odoo/pitr
+"""
+        )
+
+
+def test_pitr_api_rejects_disabled_or_wrong_environment(
+    client,
+    project_dir,
+):
+    disabled = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_base_create",
+            "environment": "production",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+    assert disabled.status_code == 400
+    assert "PITR is disabled" in disabled.json()["detail"]
+
+    _enable_pitr(project_dir)
+    wrong_environment = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_base_create",
+            "environment": "staging",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+    assert wrong_environment.status_code == 400
+    assert "bound to environment 'production'" in (
+        wrong_environment.json()["detail"]
+    )
+
+
+def test_pitr_api_rbac_and_destructive_confirmation(
+    client,
+    project_dir,
+):
+    _enable_pitr(project_dir)
+    operator_headers = {
+        "Authorization": f"Bearer {_mint_operator()}"
+    }
+    admin_headers = {"Authorization": f"Bearer {_mint_admin()}"}
+
+    for kind in ("pitr_base_create", "pitr_reconcile"):
+        response = client.post(
+            "/projects/test-project/operations",
+            json={
+                "kind": kind,
+                "environment": "production",
+                "params": {},
+            },
+            headers=operator_headers,
+        )
+        assert response.status_code == 202
+
+    denied_restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_restore",
+            "environment": "production",
+            "params": {"plan_id": "plan-safe-123"},
+        },
+        headers=operator_headers,
+    )
+    assert denied_restore.status_code == 403
+
+    accepted_restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_restore",
+            "environment": "production",
+            "params": {"plan_id": "plan-safe-123"},
+        },
+        headers=admin_headers,
+    )
+    assert accepted_restore.status_code == 202
+
+    rejected_cutover = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_cutover",
+            "environment": "production",
+            "params": {
+                "restore_id": "restore-safe-123",
+                "confirm_environment": "production",
+                "confirm_database": "wrong-db",
+                "accept_database_only": True,
+            },
+        },
+        headers=admin_headers,
+    )
+    assert rejected_cutover.status_code == 400
+
+    accepted_cutover = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_cutover",
+            "environment": "production",
+            "params": {
+                "restore_id": "restore-safe-123",
+                "confirm_environment": "production",
+                "confirm_database": "test_prod",
+                "accept_database_only": True,
+            },
+        },
+        headers=admin_headers,
+    )
+    assert accepted_cutover.status_code == 202
+
+
+@pytest.mark.parametrize(
+    ("kind", "params"),
+    [
+        ("pitr_restore", {"plan_id": "../../escape"}),
+        ("pitr_restore", {"plan_id": ""}),
+        (
+            "pitr_cutover",
+            {
+                "restore_id": "../escape",
+                "confirm_environment": "production",
+                "confirm_database": "test_prod",
+                "accept_database_only": True,
+            },
+        ),
+    ],
+)
+def test_pitr_api_rejects_unsafe_identity_before_queue(
+    client,
+    project_dir,
+    kind,
+    params,
+):
+    _enable_pitr(project_dir)
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": kind,
+            "environment": "production",
+            "params": params,
+        },
+        headers={"Authorization": f"Bearer {_mint_admin()}"},
+    )
+
+    assert response.status_code == 400
+    queue = project_dir / ".odooctl" / "queue"
+    assert not queue.exists() or not list(queue.glob("*.json"))
+
+
 def _enqueue_backup(client, token):
     resp = client.post(
         "/projects/test-project/operations",

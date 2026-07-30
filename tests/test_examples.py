@@ -64,3 +64,24 @@ def test_remote_backup_and_dr_docs_match_the_fail_closed_contract():
         "Custom-addon prerequisite",
     ):
         assert required_text in dr_docs
+
+
+def test_pitr_docs_cover_prerequisites_and_fail_closed_cutover():
+    root = Path(__file__).resolve().parents[1]
+    pitr_docs = (root / "docs" / "pitr.md").read_text()
+
+    for required_text in (
+        "PostgreSQL 13 or newer",
+        "pg_verifybackup",
+        "filestore_policy: database_only",
+        "odooctl pitr archive-config",
+        "odooctl pitr restore plan",
+        "odooctl pitr restore execute",
+        "odooctl pitr restore cutover",
+        "--accept-database-only",
+        "OID",
+        "odooctl pitr retention reconcile",
+        "odooctl pitr lease recover-expired",
+        "OWNER_STOPPED:LEASE_ID",
+    ):
+        assert required_text in pitr_docs

@@ -10,12 +10,16 @@ from odooctl.utils.shell import run
 
 class DbAdapter(Protocol):
     def ping(self, db_name: str) -> None: ...
+    def database_exists(self, db_name: str) -> bool: ...
     def dump(self, db_name: str, output: str | Path) -> None: ...
     def restore(self, db_name: str, dump_path: str | Path) -> None: ...
+    def create(self, db_name: str) -> None: ...
+    def restore_into(self, db_name: str, dump_path: str | Path) -> None: ...
     def drop(self, db_name: str) -> None: ...
     def drop_create(self, db_name: str) -> None: ...
     def psql_file(self, db_name: str, sql_file: str | Path) -> None: ...
     def psql(self, db_name: str, sql: str) -> None: ...
+    def psql_scalar(self, db_name: str, sql: str) -> str | None: ...
 
 
 class HostPostgresAdapter(PostgresAdapter):
@@ -85,9 +89,20 @@ class DockerPostgresAdapter:
         )
 
     def restore(self, db_name: str, dump_path: str | Path) -> None:
+        self.drop_create(db_name)
+        self.restore_into(db_name, dump_path)
+
+    def create(self, db_name: str) -> None:
+        run(
+            self._cmd("createdb", *self.base_args(), db_name),
+            cwd=self.project_dir,
+            env=self._password_env(),
+            stream=True,
+        )
+
+    def restore_into(self, db_name: str, dump_path: str | Path) -> None:
         from odooctl.utils.shell import run_pipe_stdin
 
-        self.drop_create(db_name)
         run_pipe_stdin(
             self._cmd("pg_restore", *self.base_args(), "-d", db_name),
             cwd=self.project_dir,
@@ -114,7 +129,7 @@ class DockerPostgresAdapter:
             stream=True,
         )
         run(self._cmd("dropdb", *self.base_args(), db_name, "--if-exists"), cwd=self.project_dir, env=self._password_env(), stream=True)
-        run(self._cmd("createdb", *self.base_args(), db_name), cwd=self.project_dir, env=self._password_env(), stream=True)
+        self.create(db_name)
 
     def psql_file(self, db_name: str, sql_file: str | Path) -> None:
         from odooctl.utils.shell import run_pipe_stdin
@@ -128,6 +143,27 @@ class DockerPostgresAdapter:
 
     def psql(self, db_name: str, sql: str) -> None:
         run(self._cmd("psql", *self.base_args(), "-d", db_name, "-v", "ON_ERROR_STOP=1", "-c", sql), cwd=self.project_dir, env=self._password_env(), stream=True)
+
+    def psql_scalar(self, db_name: str, sql: str) -> str | None:
+        result = run(
+            self._cmd(
+                "psql",
+                *self.base_args(),
+                "-d",
+                db_name,
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                sql,
+            ),
+            cwd=self.project_dir,
+            env=self._password_env(),
+        )
+        value = result.stdout.strip()
+        return value or None
 
     def clone_db_in_container(self, src: str, dst: str) -> None:
         from odooctl.utils.shell import run_pipe

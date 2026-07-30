@@ -4,6 +4,8 @@ Date: 2026-07-30
 Status: IN PROGRESS  
 Branch: `codex/reddit-enhancements`
 
+Implemented through: R4 (PostgreSQL WAL archiving and PITR)
+
 ## Why this program exists
 
 Feedback from the July 2026 r/Odoo discussion highlighted two useful truths:

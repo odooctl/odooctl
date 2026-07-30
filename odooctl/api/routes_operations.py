@@ -14,6 +14,7 @@ No privileged imports — satisfies the runner contract.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -40,8 +41,28 @@ _KIND_ACTION: dict[str, Action] = {
     "snapshot_create": Action.BACKUP,
     "snapshot_reconcile": Action.BACKUP,
     "snapshot_restore": Action.RESTORE,
+    "pitr_base_create": Action.BACKUP,
+    "pitr_restore": Action.RESTORE,
+    "pitr_cutover": Action.RESTORE,
+    "pitr_reconcile": Action.BACKUP,
     "migrate_rehearsal": Action.RESTORE,
 }
+
+_SAFE_PITR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _require_safe_pitr_id(params: dict[str, Any], name: str) -> str:
+    value = params.get(name)
+    if (
+        not isinstance(value, str)
+        or value in {".", ".."}
+        or not _SAFE_PITR_ID.fullmatch(value)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be one safe PITR identifier",
+        )
+    return value
 
 
 class OperationRequest(BaseModel):
@@ -139,6 +160,43 @@ def enqueue_operation(
                 f"{body.environment!r}"
             ),
         )
+
+    if body.kind.startswith("pitr_"):
+        pitr = ctx.config.pitr
+        if not pitr.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="PITR is disabled for this project",
+            )
+        if body.environment != pitr.environment:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "PITR is bound to environment "
+                    f"{pitr.environment!r}, not {body.environment!r}"
+                ),
+            )
+        if body.kind == "pitr_restore":
+            _require_safe_pitr_id(body.params, "plan_id")
+        elif body.kind == "pitr_cutover":
+            _require_safe_pitr_id(body.params, "restore_id")
+            expected_database = ctx.config.env(
+                body.environment
+            ).db_name
+            if (
+                body.params.get("confirm_environment")
+                != body.environment
+                or body.params.get("confirm_database")
+                != expected_database
+                or body.params.get("accept_database_only") is not True
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "PITR cutover requires exact environment/database "
+                        "confirmations and accept_database_only=true"
+                    ),
+                )
 
     # Resolve the target environment before authorization so protected-env
     # policy is applied to the actual enqueue target.

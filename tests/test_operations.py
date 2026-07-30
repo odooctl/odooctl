@@ -60,6 +60,10 @@ def test_operation_kind_values():
     assert OperationKind.SNAPSHOT_CREATE.value == "snapshot_create"
     assert OperationKind.SNAPSHOT_RECONCILE.value == "snapshot_reconcile"
     assert OperationKind.SNAPSHOT_RESTORE.value == "snapshot_restore"
+    assert OperationKind.PITR_BASE_CREATE.value == "pitr_base_create"
+    assert OperationKind.PITR_RESTORE.value == "pitr_restore"
+    assert OperationKind.PITR_CUTOVER.value == "pitr_cutover"
+    assert OperationKind.PITR_RECONCILE.value == "pitr_reconcile"
 
 
 def test_operation_status_values():

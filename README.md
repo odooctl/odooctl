@@ -79,6 +79,7 @@ odooctl status
 | Preflight checks | `odooctl doctor` | [docs/doctor.md](docs/doctor.md) |
 | Upgrade rehearsal (17 → 18 → 19) | `odooctl migrate matrix / scan / rehearse` | [docs/migration.md](docs/migration.md) |
 | Disaster recovery and provider snapshots | `odooctl dr drill`, `odooctl dr snapshot` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
+| PostgreSQL WAL archiving and PITR | `odooctl pitr` | [docs/pitr.md](docs/pitr.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
@@ -148,6 +149,9 @@ pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker
 - DR drills restore into disposable PostgreSQL and Odoo containers on an
   internal network with dedicated volumes; live services and data volumes are
   never restore targets.
+- PITR restores into an isolated PostgreSQL runtime and a new verified database
+  before an explicit, OID-fenced cutover. WAL recovery is database-only and
+  never claims to rewind the Odoo filestore.
 - Clone sanitization is on by default and disables mail, fetchmail, crons, payment providers, queue jobs, and automation rules; scrubs OAuth/IAP/webhook credentials; deletes Odoo 19 passkeys; and rewrites and freezes `web.base.url`.
 - Secrets are referenced via environment variables (`password_env`) and redacted from logs, errors, and operation events; never commit secret values.
 - The API/runner split is structurally enforced: `odooctl security runner-check` verifies the API layer imports no privileged adapters.

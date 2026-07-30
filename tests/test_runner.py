@@ -579,6 +579,183 @@ def test_runner_snapshot_restore_forwards_typed_confirmation_and_lock(
     ]
 
 
+@pytest.mark.parametrize(
+    ("kind", "service_name", "result"),
+    [
+        (
+            "pitr_base_create",
+            "create_base_backup",
+            SimpleNamespace(
+                base_backup_id="production_base_1",
+                system_identifier="7429384729384729",
+                end_wal="000000010000000000000010",
+                remote_uri="s3://archive/base/1",
+            ),
+        ),
+        (
+            "pitr_reconcile",
+            "reconcile_retention",
+            SimpleNamespace(
+                retained_base_backup_ids=("production_base_1",),
+                deleted_base_backup_ids=(),
+                deleted_wal_filenames=(),
+            ),
+        ),
+    ],
+)
+def test_runner_dispatches_pitr_backup_operations(
+    project_dir,
+    fake_registry,
+    kind,
+    service_name,
+    result,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = f"{kind}1"
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind(kind),
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(op_id=op_id, kind=kind)
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        f"odooctl.services.pitr.{service_name}",
+        return_value=result,
+    ) as service:
+        assert worker.claim_and_run() is True
+
+    service.assert_called_once()
+    assert service.call_args.args[1] == "production"
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_pitr_restore_forwards_plan_identity(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "pitrrestore1"
+    plan_id = "production_pitr_plan_123"
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.PITR_RESTORE,
+        "test-project",
+        "production",
+        "api-client",
+        {"plan_id": plan_id},
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="pitr_restore",
+            roles=["admin"],
+            params={"plan_id": plan_id},
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.pitr.execute_restore",
+        return_value=SimpleNamespace(
+            restore_id="production_pitr_restore_123",
+            new_database="test_prod_pitr_123",
+            target_time="2026-07-30T10:00:00Z",
+            recovered_lsn="0/5000000",
+        ),
+    ) as restore:
+        assert worker.claim_and_run() is True
+
+    restore.assert_called_once()
+    assert restore.call_args.args[1:] == ("production", plan_id)
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_pitr_cutover_forwards_typed_confirmation(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "pitrcutover1"
+    params = {
+        "restore_id": "production_pitr_restore_123",
+        "confirm_environment": "production",
+        "confirm_database": "test_prod",
+        "accept_database_only": True,
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.PITR_CUTOVER,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="pitr_cutover",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.pitr.cutover_restore",
+        return_value=SimpleNamespace(
+            restore_id=params["restore_id"],
+            database="test_prod",
+            filestore_consistency="not_included",
+        ),
+    ) as cutover:
+        assert worker.claim_and_run() is True
+
+    assert cutover.call_args.args[1:] == (
+        "production",
+        params["restore_id"],
+    )
+    assert cutover.call_args.kwargs == {
+        "confirm_environment": "production",
+        "confirm_database": "test_prod",
+        "accept_database_only": True,
+    }
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
 def test_runner_rejects_protected_destructive_op_with_operator_role(tmp_path):
     """Runner must reject a destructive op on a protected env when token has operator-level roles.
 

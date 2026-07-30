@@ -32,6 +32,10 @@ backups:
     region: eu-central-1
     prefix: demo-odoo
 
+pitr:
+  enabled: false
+  environment: production
+
 snapshots:
   provider: none
   pre_deploy: disabled

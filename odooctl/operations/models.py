@@ -22,6 +22,10 @@ class OperationKind(str, Enum):
     SNAPSHOT_CREATE = "snapshot_create"
     SNAPSHOT_RECONCILE = "snapshot_reconcile"
     SNAPSHOT_RESTORE = "snapshot_restore"
+    PITR_BASE_CREATE = "pitr_base_create"
+    PITR_RESTORE = "pitr_restore"
+    PITR_CUTOVER = "pitr_cutover"
+    PITR_RECONCILE = "pitr_reconcile"
     MIGRATE_REHEARSAL = "migrate_rehearsal"
 
 
