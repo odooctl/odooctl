@@ -39,6 +39,28 @@ def _validate_tar_members(archive: Path) -> None:
         raise RuntimeError(f"Could not read filestore archive {archive}: {exc}") from exc
 
 
+def _archive_root_name(archive: Path) -> str:
+    """Return the archive's single top-level member after safety validation."""
+    import tarfile
+    from pathlib import PurePosixPath
+
+    roots: set[str] = set()
+    try:
+        with tarfile.open(archive, "r:*") as tf:
+            for member in tf.getmembers():
+                parts = tuple(part for part in PurePosixPath(member.name).parts if part != ".")
+                if parts:
+                    roots.add(parts[0])
+    except tarfile.TarError as exc:
+        raise RuntimeError(f"Could not read filestore archive {archive}: {exc}") from exc
+    if len(roots) != 1:
+        raise RuntimeError(
+            "Filestore archive must contain exactly one top-level directory; "
+            f"found: {', '.join(sorted(roots)) or 'none'}"
+        )
+    return next(iter(roots))
+
+
 class FilestoreBackend(Protocol):
     def archive(self, filestore_path: str, output: str | Path) -> None: ...
     def restore_archive(self, archive_path: str | Path, target_path: str) -> None: ...
@@ -123,15 +145,46 @@ class DockerVolumeFilestore:
         )
 
     def restore_archive(self, archive_path: str | Path, target_path: str) -> None:
+        archive = Path(archive_path)
+        if not archive.exists():
+            raise FileNotFoundError(f"Filestore archive does not exist: {archive_path}")
+        _validate_tar_members(archive)
+        archive_root = _archive_root_name(archive)
         name = self._relative_name(target_path)
         parent = f"{self.root}/filestore"
+        stage = f"{parent}/.odooctl-restore-{name}"
         self.compose.exec(self.service, ["mkdir", "-p", parent], stream=True)
-        self.compose.exec(self.service, ["rm", "-rf", f"{parent}/{name}"], stream=True)
-        self.compose.exec_pipe_stdin(
-            self.service,
-            ["tar", "-xf", "-", "-C", parent],
-            stdin_path=archive_path,
-        )
+        self.compose.exec(self.service, ["rm", "-rf", stage], stream=True)
+        self.compose.exec(self.service, ["mkdir", "-p", stage], stream=True)
+        try:
+            self.compose.exec_pipe_stdin(
+                self.service,
+                [
+                    "tar",
+                    "--no-same-owner",
+                    "--no-same-permissions",
+                    "-xf",
+                    "-",
+                    "-C",
+                    stage,
+                ],
+                stdin_path=archive,
+            )
+            # Extract into a private directory first. The archive carries the
+            # source DB's top-level name, which must never be written directly
+            # into the live filestore root during a cross-name restore/drill.
+            self.compose.exec(
+                self.service,
+                ["rm", "-rf", f"{parent}/{name}"],
+                stream=True,
+            )
+            self.compose.exec(
+                self.service,
+                ["mv", f"{stage}/{archive_root}", f"{parent}/{name}"],
+                stream=True,
+            )
+        finally:
+            self.compose.exec(self.service, ["rm", "-rf", stage], stream=True)
 
     def copy(self, source: str, target: str) -> None:
         src = self._container_filestore_dir(source)

@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Policy-controlled remote portable backups with `required`, `best_effort`,
+  and `disabled` modes; post-upload byte verification; project-scoped S3
+  namespaces; globally unique 24-hex-suffixed backup IDs; UTC
+  daily/weekly/monthly GFS retention with a completed-backup concurrency grace;
+  abandonment-marker/grace-period orphan reconciliation; plus the
+  `backup-remote list`, `backup-remote verify`, and `backup-remote download`
+  commands.
+- Schedule generation for verified backups, remote verification, and DR drills,
+  including systemd `EnvironmentFile=` and cron environment-file loading.
+- Isolated DR drills that restore the newest owned backup into disposable
+  PostgreSQL-on-tmpfs and Odoo containers on an internal network, with
+  drill-only filestore/config volumes, loopback-only health probing, exact
+  project/environment validation, and exhaustive teardown after partial
+  failure.
 - Open-source contribution infrastructure: label taxonomy
   (`.github/labels.yml`) with automated sync, path-based PR auto-labeling,
   issue triage flow (`status/needs-triage`), a documentation issue
@@ -34,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy, plan-only recovery by default, idempotent isolated recovery resources
   (including private-network-only Hetzner servers), partial-resource tracking,
   and exact snapshot/resource confirmation before execution.
+
+### Security
+
+- Removed remote-destination ambiguity: unavailable S3 dependencies,
+  credentials, or provider access now follow the configured policy and never
+  count another destination as an off-host copy.
+- DR drills no longer restore into the live PostgreSQL cluster or live Odoo
+  filestore. Generated database credentials remain off argv, the drill has no
+  external network egress, and cleanup failure is reported as drill failure.
 
 ## [0.2.0] - 2026-07-19
 

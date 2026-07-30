@@ -12,6 +12,7 @@ from odooctl.metadata.models import (
 )
 from odooctl.utils.paths import ensure_dir
 
+
 class MetadataStore:
     def __init__(self, root: str | Path = ".odooctl"):
         self.root = ensure_dir(root)
@@ -22,16 +23,132 @@ class MetadataStore:
         ensure_dir(self.root / "snapshots" / "restores")
 
     def save_deployment(self, metadata: DeploymentMetadata) -> Path:
-        path = self.root / "deployments" / f"{metadata.environment}-{metadata.timestamp.replace(':','')}.json"
+        path = (
+            self.root
+            / "deployments"
+            / f"{metadata.environment}-{metadata.timestamp.replace(':', '')}.json"
+        )
         path.write_text(metadata.model_dump_json(indent=2))
-        (self.root / "deployments" / f"{metadata.environment}-latest.json").write_text(metadata.model_dump_json(indent=2))
+        (self.root / "deployments" / f"{metadata.environment}-latest.json").write_text(
+            metadata.model_dump_json(indent=2)
+        )
         return path
 
     def save_backup_manifest(self, backup_id: str, manifest: BackupManifest) -> Path:
-        path = self.root / "backups" / f"{backup_id}.json"
-        path.write_text(manifest.model_dump_json(indent=2))
-        (self.root / "backups" / f"{manifest.environment}-latest.json").write_text(manifest.model_dump_json(indent=2))
+        safe_id = self._safe_backup_component(backup_id, "backup_id")
+        if manifest.backup_id != safe_id:
+            raise ValueError(
+                f"Backup manifest identity mismatch: {safe_id!r} != {manifest.backup_id!r}"
+            )
+        environment = self._safe_backup_component(
+            manifest.environment,
+            "environment",
+        )
+        payload = manifest.model_dump_json(indent=2)
+        path = self.root / "backups" / f"{safe_id}.json"
+        self._write_atomic(path, payload)
+        self._write_atomic(
+            self.root / "backups" / f"{environment}-latest.json",
+            payload,
+        )
         return path
+
+    def update_backup_manifest(self, manifest: BackupManifest) -> Path:
+        """Atomically update one backup index without moving ``latest`` backwards.
+
+        The environment latest pointer is refreshed only when it already
+        references this backup. This is used for remote-upload/verification
+        state transitions that may also target an older retained backup.
+        """
+        safe_id = self._safe_backup_component(
+            manifest.backup_id,
+            "backup_id",
+        )
+        environment = self._safe_backup_component(
+            manifest.environment,
+            "environment",
+        )
+        payload = manifest.model_dump_json(indent=2)
+        path = self.root / "backups" / f"{safe_id}.json"
+        self._write_atomic(path, payload)
+
+        latest = self.root / "backups" / f"{environment}-latest.json"
+        if latest.exists():
+            try:
+                current = BackupManifest.model_validate_json(latest.read_text())
+            except Exception:
+                current = None
+            if current is not None and current.backup_id == safe_id:
+                self._write_atomic(latest, payload)
+        return path
+
+    def synchronize_backup_manifests(
+        self,
+        environment: str,
+        manifests: list[BackupManifest],
+        *,
+        latest_backup_id: str | None = None,
+    ) -> None:
+        """Make one environment's metadata index match published backups."""
+        safe_environment = self._safe_backup_component(
+            environment,
+            "environment",
+        )
+        desired: dict[str, BackupManifest] = {}
+        for manifest in manifests:
+            if manifest.environment != safe_environment:
+                raise ValueError(
+                    f"Backup {manifest.backup_id!r} belongs to environment "
+                    f"{manifest.environment!r}, not {safe_environment!r}"
+                )
+            safe_id = self._safe_backup_component(
+                manifest.backup_id,
+                "backup_id",
+            )
+            if safe_id in desired:
+                raise ValueError(f"Duplicate backup manifest id: {safe_id}")
+            desired[safe_id] = manifest
+
+        backups_dir = self.root / "backups"
+        for path in backups_dir.glob("*.json"):
+            if path.name.endswith("-latest.json"):
+                continue
+            try:
+                existing = BackupManifest.model_validate_json(path.read_text())
+            except Exception:
+                continue
+            if existing.environment == safe_environment and existing.backup_id not in desired:
+                path.unlink(missing_ok=True)
+
+        for backup_id, manifest in desired.items():
+            self._write_atomic(
+                backups_dir / f"{backup_id}.json",
+                manifest.model_dump_json(indent=2),
+            )
+
+        latest_path = backups_dir / f"{safe_environment}-latest.json"
+        if not desired:
+            latest_path.unlink(missing_ok=True)
+            self._fsync_directory(backups_dir)
+            return
+        if latest_backup_id is None:
+            latest_backup_id = max(
+                desired,
+                key=lambda backup_id: (
+                    desired[backup_id].timestamp,
+                    backup_id,
+                ),
+            )
+        safe_latest_id = self._safe_backup_component(
+            latest_backup_id,
+            "latest_backup_id",
+        )
+        if safe_latest_id not in desired:
+            raise ValueError(f"Latest backup {safe_latest_id!r} is not retained")
+        self._write_atomic(
+            latest_path,
+            desired[safe_latest_id].model_dump_json(indent=2),
+        )
 
     def save_sanitization(self, metadata: SanitizationMetadata) -> Path:
         timestamp = metadata.timestamp.replace(":", "")
@@ -114,6 +231,28 @@ class MetadataStore:
         finally:
             temporary.unlink(missing_ok=True)
 
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        directory_fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    @staticmethod
+    def _safe_backup_component(value: str, label: str) -> str:
+        if (
+            not value
+            or value in {".", ".."}
+            or Path(value).name != value
+            or any(
+                ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                for ch in value
+            )
+        ):
+            raise ValueError(f"{label} contains unsupported characters")
+        return value
+
     def _snapshot_path(self, snapshot_id: str) -> Path:
         safe_id = self._safe_snapshot_component(snapshot_id, "snapshot_id")
         return self.root / "snapshots" / f"{safe_id}.json"
@@ -125,8 +264,7 @@ class MetadataStore:
             or value in {".", ".."}
             or Path(value).name != value
             or any(
-                ch
-                not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
                 for ch in value
             )
         ):

@@ -105,20 +105,28 @@ def test_host_filestore_uses_plain_tar_archive(tmp_path: Path, monkeypatch):
 
 
 def test_docker_volume_filestore_streams_archive_restore_and_copy(tmp_path: Path, monkeypatch):
+    import tarfile
+
     ctx = context(tmp_path)
     compose = DummyCompose("docker-compose.yml", str(tmp_path))
     monkeypatch.setattr(filestore_module, "DockerComposeAdapter", lambda *args, **kwargs: compose)
     adapter = DockerVolumeFilestore(ctx, ctx.config)
+    source = tmp_path / "odoo_prod"
+    source.mkdir()
+    (source / "attachment").write_text("data")
+    archive = tmp_path / "filestore.tar"
+    with tarfile.open(archive, "w") as tf:
+        tf.add(source, arcname="odoo_prod")
 
-    adapter.archive("odoo_staging", tmp_path / "filestore.tar")
-    adapter.restore_archive(tmp_path / "filestore.tar", "odoo_staging")
+    adapter.archive("odoo_staging", archive)
+    adapter.restore_archive(archive, "odoo_staging")
     adapter.copy("odoo_prod", "odoo_staging")
 
     assert compose.calls[0] == (
         "capture",
         "odoo",
         ["tar", "-cf", "-", "-C", "/var/lib/odoo/filestore", "odoo_staging"],
-        tmp_path / "filestore.tar",
+        archive,
     )
     assert compose.calls[1][0:3] == (
         "exec",
@@ -128,18 +136,26 @@ def test_docker_volume_filestore_streams_archive_restore_and_copy(tmp_path: Path
     assert compose.calls[2][0:3] == (
         "exec",
         "odoo",
-        ["rm", "-rf", "/var/lib/odoo/filestore/odoo_staging"],
+        ["rm", "-rf", "/var/lib/odoo/filestore/.odooctl-restore-odoo_staging"],
     )
-    assert compose.calls[3] == (
-        "stdin",
-        "odoo",
-        ["tar", "-xf", "-", "-C", "/var/lib/odoo/filestore"],
-        tmp_path / "filestore.tar",
-    )
-    assert compose.calls[4][0:3] == (
+    assert compose.calls[3][0:3] == (
         "exec",
         "odoo",
-        ["mkdir", "-p", "/var/lib/odoo/filestore"],
+        ["mkdir", "-p", "/var/lib/odoo/filestore/.odooctl-restore-odoo_staging"],
+    )
+    assert compose.calls[4] == (
+        "stdin",
+        "odoo",
+        [
+            "tar",
+            "--no-same-owner",
+            "--no-same-permissions",
+            "-xf",
+            "-",
+            "-C",
+            "/var/lib/odoo/filestore/.odooctl-restore-odoo_staging",
+        ],
+        archive,
     )
     assert compose.calls[5][0:3] == (
         "exec",
@@ -149,10 +165,73 @@ def test_docker_volume_filestore_streams_archive_restore_and_copy(tmp_path: Path
     assert compose.calls[6][0:3] == (
         "exec",
         "odoo",
+        [
+            "mv",
+            "/var/lib/odoo/filestore/.odooctl-restore-odoo_staging/odoo_prod",
+            "/var/lib/odoo/filestore/odoo_staging",
+        ],
+    )
+    assert compose.calls[7][0:3] == (
+        "exec",
+        "odoo",
+        ["rm", "-rf", "/var/lib/odoo/filestore/.odooctl-restore-odoo_staging"],
+    )
+    assert compose.calls[8][0:3] == (
+        "exec",
+        "odoo",
+        ["mkdir", "-p", "/var/lib/odoo/filestore"],
+    )
+    assert compose.calls[9][0:3] == (
+        "exec",
+        "odoo",
+        ["rm", "-rf", "/var/lib/odoo/filestore/odoo_staging"],
+    )
+    assert compose.calls[10][0:3] == (
+        "exec",
+        "odoo",
         ["cp", "-a", "/var/lib/odoo/filestore/odoo_prod", "/var/lib/odoo/filestore/odoo_staging"],
     )
     assert not any(
         call[2][:2] == ["sh", "-lc"] for call in compose.calls if call[0] == "exec"
+    )
+
+
+def test_docker_volume_drill_restore_cannot_overwrite_archive_named_production(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import tarfile
+
+    ctx = context(tmp_path)
+    compose = DummyCompose("docker-compose.yml", str(tmp_path))
+    monkeypatch.setattr(filestore_module, "DockerComposeAdapter", lambda *args, **kwargs: compose)
+    source = tmp_path / "odoo_prod"
+    source.mkdir()
+    (source / "attachment").write_text("production data")
+    archive = tmp_path / "production-filestore.tar"
+    with tarfile.open(archive, "w") as tf:
+        tf.add(source, arcname="odoo_prod")
+
+    DockerVolumeFilestore(ctx, ctx.config).restore_archive(
+        archive,
+        "odoo_prod_dr_drill",
+    )
+
+    live_path = "/var/lib/odoo/filestore/odoo_prod"
+    drill_path = "/var/lib/odoo/filestore/odoo_prod_dr_drill"
+    assert not any(
+        call[0] == "exec" and call[2] == ["rm", "-rf", live_path]
+        for call in compose.calls
+    )
+    assert any(
+        call[0] == "exec"
+        and call[2]
+        == [
+            "mv",
+            "/var/lib/odoo/filestore/.odooctl-restore-odoo_prod_dr_drill/odoo_prod",
+            drill_path,
+        ]
+        for call in compose.calls
     )
 
 

@@ -25,43 +25,83 @@ def drill(
     environment: str = typer.Argument(..., help="Source environment whose latest backup to drill."),
     config: str = "odooctl.yml",
 ) -> None:
-    """Run a DR drill: restore the latest backup into a throwaway DB, healthcheck, then clean up."""
+    """Restore the latest backup into an isolated Odoo runtime, probe it, and clean up."""
+    from odooctl.adapters.dr_runtime import DockerComposeDrillRuntime
     from odooctl.services.context import ServiceContext
     from odooctl.services.dr import run_dr_drill
-    from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
-    from odooctl.adapters.filestore import FilestoreAdapter
+    from odooctl.operations.audit import AuditStore
+    from odooctl.operations.engine import run_operation
+    from odooctl.operations.models import OperationKind
+    from odooctl.operations.store import OperationStore
 
     service_ctx = ServiceContext.from_config_path(_config_path(ctx, config))
     cfg = service_ctx.project.config
+    cfg.env(environment)
 
-    db_adapter = make_context_db_adapter(service_ctx.project)
-    fs_adapter = FilestoreAdapter()
+    runtime = DockerComposeDrillRuntime(service_ctx.project)
 
     def healthcheck_fn(url: str) -> bool:
-        try:
-            from odooctl.odoo.healthcheck import check_url
-            check_url(url, timeout=cfg.healthcheck.timeout_seconds, retries=1, interval=1)
-            return True
-        except Exception:
-            return False
+        from odooctl.odoo.healthcheck import check_url
 
-    result = run_dr_drill(
+        check_url(
+            url,
+            timeout=cfg.healthcheck.timeout_seconds,
+            retries=cfg.healthcheck.retries,
+            interval=cfg.healthcheck.interval_seconds,
+        )
+        return True
+
+    store = OperationStore(service_ctx.project.state_dir)
+    audit = AuditStore(service_ctx.project.state_dir)
+    result = None
+    with run_operation(
+        store,
+        audit,
+        kind=OperationKind.DR_DRILL,
+        project=cfg.project.name,
         environment=environment,
-        backups_root=service_ctx.project.backups_dir,
-        db_adapter=db_adapter,
-        fs_adapter=fs_adapter,
-        healthcheck_fn=healthcheck_fn,
-        is_protected_fn=cfg.is_protected,
-    )
+        actor="cli",
+        params_redacted={
+            "environment": environment,
+            "backup": "latest",
+            "isolated": True,
+        },
+        state_dir=service_ctx.project.state_dir,
+    ) as op_ctx:
+        op_ctx.emit("starting isolated restore drill", phase="dr_drill")
+        result = run_dr_drill(
+            environment=environment,
+            expected_project=cfg.project.name,
+            backups_root=service_ctx.project.backups_dir,
+            healthcheck_fn=healthcheck_fn,
+            is_protected_fn=cfg.is_protected,
+            runtime_filestore_root=(
+                f"{cfg.odoo.filestore_container_path.rstrip('/')}/filestore"
+            ),
+            prepare_runtime_fn=runtime.prepare,
+            restore_database_fn=runtime.restore_database,
+            restore_filestore_fn=runtime.restore_filestore,
+            start_runtime_fn=runtime.start,
+            stop_runtime_fn=runtime.stop,
+        )
+        if result.status != "success":
+            raise RuntimeError(result.message or "Isolated DR drill failed")
+        op_ctx.emit(
+            f"isolated restore drill passed: {result.backup_id}",
+            phase="dr_drill",
+            data={
+                "backup_id": result.backup_id,
+                "database": result.database,
+                "filestore_path": result.filestore_path,
+            },
+        )
 
+    assert result is not None
     typer.echo(f"DR drill for {environment!r}: {result.status}")
     if result.backup_id:
         typer.echo(f"Backup used: {result.backup_id}")
     if result.message:
         typer.echo(f"Note: {result.message}")
-
-    if result.status != "success":
-        raise typer.Exit(code=1)
 
 
 @snapshot_app.command("create")

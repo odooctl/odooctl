@@ -7,6 +7,7 @@ import typer
 from odooctl.cli_selector import resolve_config_path
 from odooctl.commands import (
     backup as backup_cmd,
+    backup_remote as backup_remote_cmd,
     branch as branch_cmd,
     catalog as catalog_cmd,
     clone as clone_cmd,
@@ -47,6 +48,7 @@ app.add_typer(security_cmd.app, name="security")
 app.add_typer(domain_cmd.app, name="domain")
 app.add_typer(dr_cmd.app, name="dr")
 app.add_typer(migrate_cmd.app, name="migrate")
+app.add_typer(backup_remote_cmd.app, name="backup-remote")
 
 
 def _context_config(ctx: typer.Context, config: str) -> str:
@@ -194,7 +196,10 @@ def doctor(
 @app.command()
 def schedule(
     ctx: typer.Context,
-    command: str = typer.Argument(..., help="odooctl command to schedule: backup or doctor."),
+    command: str = typer.Argument(
+        ...,
+        help="Schedule: backup, backup-remote-verify, dr-drill, or doctor.",
+    ),
     environment: str = typer.Option(..., "--env", "--environment", help="Environment to target."),
     format: str = typer.Option("systemd", "--format", "-f", help="Output format: systemd or cron."),
     interval: str = typer.Option(
@@ -207,6 +212,11 @@ def schedule(
     cron_line: bool = typer.Option(False, "--cron-line", help="Shortcut for --format cron."),
     user: str | None = typer.Option(None, "--user", "-u", help="User for systemd service or /etc/cron.d entry."),
     odooctl_bin: str = typer.Option("odooctl", "--odooctl-bin", help="Path/name of the odooctl executable."),
+    environment_file: Path | None = typer.Option(
+        None,
+        "--environment-file",
+        help="Load schedule secrets from this systemd/POSIX environment file.",
+    ),
     config: str = "odooctl.yml",
 ):
     try:
@@ -218,6 +228,7 @@ def schedule(
             interval=interval,
             user=user,
             odooctl_bin=odooctl_bin,
+            environment_file=environment_file,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc

@@ -13,6 +13,7 @@ The runner:
 This module is privileged — it imports ``odooctl.adapters`` / ``odooctl.odoo``
 transitively via the service layer. It must never be imported by odooctl.api.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -38,7 +39,7 @@ from odooctl.security import rbac, tokens
 from odooctl.security.principals import Principal, PrincipalKind, Role
 from odooctl.security.tokens import TokenError
 from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
-from odooctl.adapters.filestore import FilestoreAdapter
+from odooctl.adapters.dr_runtime import DockerComposeDrillRuntime
 from odooctl.migration.rehearse import rehearse_upgrade, UpgradeResult
 from odooctl.services.backup import run_backup
 from odooctl.services.clone import run_clone
@@ -239,7 +240,9 @@ class RunnerWorker:
                 project=entry.project,
             )
         except TokenError as exc:
-            store.update_status(entry.op_id, OperationStatus.FAILED, error=redact(f"token error: {exc}"))
+            store.update_status(
+                entry.op_id, OperationStatus.FAILED, error=redact(f"token error: {exc}")
+            )
             queue.fail(entry.op_id)
             return False
 
@@ -251,7 +254,9 @@ class RunnerWorker:
             protected = ctx.config.is_protected(entry.environment)
             rbac.require(_principal_from_payload(payload), action, protected=protected)
         except (KeyError, ValueError, rbac.AccessDenied) as exc:
-            store.update_status(entry.op_id, OperationStatus.FAILED, error=redact(f"rbac error: {exc}"))
+            store.update_status(
+                entry.op_id, OperationStatus.FAILED, error=redact(f"rbac error: {exc}")
+            )
             queue.fail(entry.op_id)
             return False
 
@@ -351,7 +356,22 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
 
     if kind == OperationKind.BACKUP.value:
         result = run_backup(svc_ctx, env)
-        op_ctx.emit(f"backup complete: {result.backup_id}", phase="backup")
+        op_ctx.emit(
+            f"backup complete: {result.backup_id}",
+            phase="backup",
+            data={
+                "backup_id": result.backup_id,
+                "remote_uri": result.remote_uri,
+                "remote_status": result.remote_status,
+            },
+        )
+        if result.remote_error:
+            op_ctx.emit(
+                f"remote backup warning: {result.remote_error}",
+                phase="remote_backup",
+                level="warning",
+                data={"remote_status": result.remote_status},
+            )
 
     elif kind == OperationKind.CLONE.value:
         source = params.get("source", "production")
@@ -360,25 +380,34 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
 
     elif kind == OperationKind.DR_DRILL.value:
         cfg = svc_ctx.project.config
-        db_adapter = make_context_db_adapter(svc_ctx.project)
-        fs_adapter = FilestoreAdapter()
+        cfg.env(env)
+        runtime = DockerComposeDrillRuntime(svc_ctx.project)
 
         def healthcheck_fn(url: str) -> bool:
-            try:
-                from odooctl.odoo.healthcheck import check_url
+            from odooctl.odoo.healthcheck import check_url
 
-                check_url(url, timeout=cfg.healthcheck.timeout_seconds, retries=1, interval=1)
-                return True
-            except Exception:
-                return False
+            check_url(
+                url,
+                timeout=cfg.healthcheck.timeout_seconds,
+                retries=cfg.healthcheck.retries,
+                interval=cfg.healthcheck.interval_seconds,
+            )
+            return True
 
         result = run_dr_drill(
             environment=env,
+            expected_project=cfg.project.name,
             backups_root=svc_ctx.project.backups_dir,
-            db_adapter=db_adapter,
-            fs_adapter=fs_adapter,
             healthcheck_fn=healthcheck_fn,
             is_protected_fn=cfg.is_protected,
+            runtime_filestore_root=(
+                f"{cfg.odoo.filestore_container_path.rstrip('/')}/filestore"
+            ),
+            prepare_runtime_fn=runtime.prepare,
+            restore_database_fn=runtime.restore_database,
+            restore_filestore_fn=runtime.restore_filestore,
+            start_runtime_fn=runtime.start,
+            stop_runtime_fn=runtime.stop,
         )
         if result.status != "success":
             raise RuntimeError(result.message or "DR drill failed")
@@ -400,9 +429,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
     elif kind == OperationKind.SNAPSHOT_RECONCILE.value:
         snapshot_id = str(params.get("snapshot_id", ""))
         if not snapshot_id:
-            raise ValueError(
-                "snapshot_reconcile requires 'snapshot_id' in params"
-            )
+            raise ValueError("snapshot_reconcile requires 'snapshot_id' in params")
         result = run_snapshot_reconcile(
             svc_ctx,
             snapshot_id,
@@ -448,9 +475,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
                 "restored_resource_ids": list(result.restored_resource_ids),
                 "plan": {
                     "provider": result.plan.provider,
-                    "commands": [
-                        list(command) for command in result.plan.commands
-                    ],
+                    "commands": [list(command) for command in result.plan.commands],
                     "destructive": result.plan.destructive,
                     "notes": list(result.plan.notes),
                 },
@@ -496,8 +521,10 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
             else:
                 cmd = [
                     "odoo",
-                    "--database", throwaway_db,
-                    "--update", "all",
+                    "--database",
+                    throwaway_db,
+                    "--update",
+                    "all",
                     "--stop-after-init",
                 ]
             try:

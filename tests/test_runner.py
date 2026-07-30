@@ -413,6 +413,13 @@ def test_runner_claims_and_executes_dr_drill(project_dir, fake_registry):
 
     assert did_work is True
     drill.assert_called_once()
+    drill_kwargs = drill.call_args.kwargs
+    assert drill_kwargs["expected_project"] == "test-project"
+    assert "db_adapter" not in drill_kwargs
+    assert "fs_adapter" not in drill_kwargs
+    assert callable(drill_kwargs["prepare_runtime_fn"])
+    assert callable(drill_kwargs["restore_database_fn"])
+    assert callable(drill_kwargs["restore_filestore_fn"])
     store = OperationStore(project_dir / ".odooctl")
     op = store.load(op_id)
     assert op.status == OperationStatus.SUCCEEDED

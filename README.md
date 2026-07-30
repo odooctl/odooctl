@@ -11,6 +11,10 @@
 
 - **Safety by default.** Deploys to protected environments take a database + filestore backup first; failed module updates and failed health checks stop the deployment with a non-zero exit.
 - **Verify before destroy.** Restores land in a temporary database and are only swapped into place after the restore succeeds — a bad backup never destroys a working environment.
+- **Off-host backup policy is explicit.** S3 copies can be `required`,
+  `best_effort`, or `disabled`, with byte verification, project-scoped object
+  namespaces, and retention that never treats an unknown old upload as safe to
+  delete.
 - **Staging clones you can trust.** `odooctl clone production staging` sanitizes by default: mail servers, crons, payment providers, queue jobs, OAuth secrets, IAP tokens, and webhook URLs are neutralized — including wiping Odoo 19 WebAuthn passkeys — so staging cannot email customers or charge cards.
 - **Adopt what you already run.** `odooctl import` detects an existing compose deployment read-only, previews the generated config, and only writes on `--yes` — then registers the project, runs preflight checks, and takes a safety backup.
 - **Protected environments.** Production-tier environments require elevated confirmation for destructive operations, in the CLI, API, and web UI alike.
@@ -68,7 +72,7 @@ odooctl status
 | --- | --- | --- |
 | Import / takeover of existing stacks | `odooctl import` | [docs/getting-started.md](docs/getting-started.md) |
 | Deploy with pre-deploy backups | `odooctl deploy` | [docs/deployment.md](docs/deployment.md) |
-| Verified backups, safe restores | `odooctl backup --verify`, `odooctl restore` | [docs/backup-restore.md](docs/backup-restore.md) |
+| Verified local/remote backups, safe restores | `odooctl backup --verify`, `odooctl backup-remote`, `odooctl restore` | [docs/backup-restore.md](docs/backup-restore.md) |
 | Sanitized staging clones | `odooctl clone`, `odooctl env create` | [docs/staging-clone.md](docs/staging-clone.md), [docs/environments.md](docs/environments.md) |
 | Rollback (code or full) | `odooctl rollback` | [docs/rollback.md](docs/rollback.md) |
 | Environment promotion | `odooctl promote` | [docs/environments.md](docs/environments.md) |
@@ -79,7 +83,7 @@ odooctl status
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
 | Stack / addon catalog | `odooctl catalog`, `odooctl setup` | [docs/catalog.md](docs/catalog.md) |
-| Scheduled backups / checks | `odooctl schedule` | [docs/getting-started.md](docs/getting-started.md) |
+| Scheduled backups / checks / DR drills | `odooctl schedule` | [docs/backup-restore.md#scheduling-backups-verification-and-drills](docs/backup-restore.md#scheduling-backups-verification-and-drills) |
 
 Provider snapshots are deliberately coarse DR artifacts: one provider source is
 bound to one environment, recovery is plan-only by default, and execution
@@ -141,6 +145,9 @@ pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker
 - Deploys to protected environments create database and filestore backups first.
 - Module-update and health-check failures fail the deployment with a non-zero exit.
 - Restores go into a temporary database and are swapped in only after success.
+- DR drills restore into disposable PostgreSQL and Odoo containers on an
+  internal network with dedicated volumes; live services and data volumes are
+  never restore targets.
 - Clone sanitization is on by default and disables mail, fetchmail, crons, payment providers, queue jobs, and automation rules; scrubs OAuth/IAP/webhook credentials; deletes Odoo 19 passkeys; and rewrites and freezes `web.base.url`.
 - Secrets are referenced via environment variables (`password_env`) and redacted from logs, errors, and operation events; never commit secret values.
 - The API/runner split is structurally enforced: `odooctl security runner-check` verifies the API layer imports no privileged adapters.

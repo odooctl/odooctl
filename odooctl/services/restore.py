@@ -31,7 +31,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_backup_dir(environment: str, backup: str, backups_root: Path) -> Path:
+def resolve_backup_dir(
+    environment: str,
+    backup: str,
+    backups_root: Path,
+    *,
+    expected_project: str | None = None,
+) -> Path:
     """Resolve a backup id to a directory strictly inside *backups_root*.
 
     Path containment (audit finding F10): *backup* is client-suppliable (CLI
@@ -62,7 +68,31 @@ def resolve_backup_dir(environment: str, backup: str, backups_root: Path) -> Pat
                 f"escapes the backups root {root}"
             )
         return candidate
-    candidates = sorted(backups_root.glob(f"{environment}_*"))
+    candidates = sorted(
+        path
+        for path in backups_root.glob(f"{environment}_*")
+        if path.is_dir() and not path.is_symlink()
+    )
+    if expected_project is not None:
+        # A backups root may be shared by multiple projects. Select the newest
+        # directory whose manifest claims this project instead of selecting a
+        # newer foreign backup and only discovering the mismatch after the
+        # choice has already been made. The selected manifest is validated
+        # again by the caller, which closes the read/selection race.
+        for candidate in reversed(candidates):
+            manifest_path = candidate / "manifest.json"
+            if not manifest_path.is_file() or manifest_path.is_symlink():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if manifest.get("project") == expected_project:
+                return candidate
+        raise RuntimeError(
+            f"No backups found for project {expected_project!r} "
+            f"and environment {environment!r}"
+        )
     if not candidates:
         raise RuntimeError(f"No backups found for environment: {environment}")
     return candidates[-1]
@@ -81,13 +111,24 @@ def validate_backup_dir(
     if missing:
         raise FileNotFoundError(f"Backup is missing required file(s): {', '.join(missing)}")
     manifest = json.loads((backup_dir / "manifest.json").read_text())
-    if expected_project and manifest.get("project") != expected_project:
+    if expected_project is not None and manifest.get("project") != expected_project:
         raise RuntimeError(
             f"Backup project mismatch: expected {expected_project}, got {manifest.get('project')}"
         )
-    if expected_environment and manifest.get("environment") != expected_environment:
+    if (
+        expected_environment is not None
+        and manifest.get("environment") != expected_environment
+    ):
         raise RuntimeError(
             f"Backup environment mismatch: expected {expected_environment}, got {manifest.get('environment')}"
+        )
+    if manifest.get("backup_id") != backup_dir.name:
+        raise RuntimeError(
+            f"Backup id mismatch: expected {backup_dir.name}, got {manifest.get('backup_id')}"
+        )
+    if manifest.get("status", "complete") != "complete":
+        raise RuntimeError(
+            f"Backup is not complete: {manifest.get('status')}"
         )
     if restore_mode == "full" and manifest.get("backup_mode", "full") != "full":
         raise RuntimeError(f"Unsupported backup mode for full restore: {manifest.get('backup_mode')}")

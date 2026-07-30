@@ -64,7 +64,7 @@ one pull request.
 - Extend schedules beyond rendering a single command so an hourly/daily backup
   policy can include upload verification and periodic restore drills.
 - Make remote-upload failure honest and configurable; production policies must
-  be able to fail instead of silently treating a local mirror as off-site.
+  be able to fail when the configured off-site destination is unavailable.
 - Add remote object verification and retention-aware pruning.
 - Generate systemd/cron units for backup, remote verification, and DR drills.
 

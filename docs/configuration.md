@@ -18,7 +18,8 @@ Key sections:
 - `postgres`: host-side connection settings plus Docker service/internal-host settings for container-native operations.
 - `odoo`: image, native CLI command, config path, addons paths, service name,
   DB flags for module updates, and container filestore root.
-- `backups`: local backup path, optional S3 remote storage, and retention policy.
+- `backups`: local backup path, UTC GFS retention, and policy-controlled S3
+  remote storage.
 - `snapshots`: optional AWS EBS or Hetzner Cloud coarse-DR provider and
   protected pre-deploy policy.
 - `sanitization`: native Odoo neutralization policy, SQL extension files, and
@@ -104,17 +105,77 @@ Configure a bucket and optional prefix/region/endpoint. Credentials can come fro
 
 ```yaml
 backups:
+  local_path: backups
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 6
+    grace_hours: 1
   remote:
     type: s3
     bucket: acme-odoo-backups
-    prefix: acme/production
+    prefix: acme
     region: eu-central-1
+    policy: required
+    verify_after_upload: true
+    orphan_grace_hours: 24
     endpoint_env: ODOO_S3_ENDPOINT
     access_key_env: ODOO_S3_ACCESS_KEY
     secret_key_env: ODOO_S3_SECRET_KEY
 ```
 
-If `boto3` or credentials are unavailable, `odooctl` warns and mirrors the remote backup under `.odooctl/remote-backups/` so backup creation does not fail because remote upload is unavailable.
+Remote uploads never switch to another destination. `policy` controls the
+outcome when S3 support, credentials, upload, verification, or retention is
+unavailable:
+
+- `required`: fail the command after preserving the validated local backup and
+  recording the remote failure.
+- `best_effort`: keep the local operation successful and record/report a
+  degraded remote result. This is the default.
+- `disabled`: perform no remote work; `bucket` is optional in this mode.
+
+`verify_after_upload` defaults to `true`. It reads the newly stored objects
+back and compares their actual bytes with the manifest SHA-256 checksums before
+publishing success. Set it to `false` only when immediate provider read-back is
+too expensive, then schedule `odooctl backup-remote verify` separately.
+
+`orphan_grace_hours` defaults to `24` and must be at least one hour. It is a
+minimum age, not permission to delete arbitrary objects. Automatic cleanup of
+an incomplete prefix additionally requires the publisher's valid abandonment
+marker; an old markerless prefix without one is retained and reported for
+manual review because another host may still be uploading it.
+
+The configured `prefix` is a base only. New writes are automatically scoped
+below `projects/<project-slug>-<project-hash>/`, and every read/delete validates
+the manifest project and environment. Backup IDs include a UTC timestamp and
+an unconditional random 24-hex suffix so concurrent publishers do not share an
+ID.
+Local and remote retention use `retention.daily`, `weekly`, and `monthly` as
+UTC GFS tiers and always keep the newest owned backup. `retention.grace_hours`
+defaults to one and temporarily protects every newly completed backup, so
+concurrent hosts cannot prune each other's just-published restore points.
+
+See [Backup and restore](backup-restore.md#remote-s3-copies) for object
+publication ordering, remote inspection/download commands, and scheduling.
+
+## Schedule environment files
+
+The schedule generator supports `backup`, `backup-remote-verify`, `dr-drill`,
+and `doctor`. Provide credentials without embedding them in generated units:
+
+```bash
+odooctl schedule backup-remote-verify --env production --interval daily \
+  --environment-file /etc/odooctl/acme.env
+```
+
+Systemd output uses `EnvironmentFile=`; cron output sources the same path and
+exports its assignments. Keep the file outside the repository, restrict it to
+the service account, and use plain `NAME=value` lines compatible with both
+formats. The generator prints configuration only—it does not install or enable
+the timer or cron entry. An explicit or scheduled `backup-remote verify`
+returns non-zero for any retention reconciliation alert even with
+`best_effort`; that policy keeps backup creation available, not monitoring
+green when remote cleanup needs attention.
 
 ## VM and volume snapshots
 

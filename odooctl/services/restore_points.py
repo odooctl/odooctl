@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from odooctl.services.restore import sha256_file
@@ -27,7 +28,7 @@ def list_restore_points(
         return []
 
     points: list[RestorePoint] = []
-    for d in sorted(root.iterdir(), reverse=True):
+    for d in root.iterdir():
         if not d.is_dir():
             continue
         manifest_file = d / "manifest.json"
@@ -43,9 +44,8 @@ def list_restore_points(
         if environment is not None and env != environment:
             continue
 
-        # Parse timestamp from backup_id: {environment}_{timestamp}
         backup_id = manifest.get("backup_id", d.name)
-        ts = backup_id[len(env) + 1:] if backup_id.startswith(env + "_") else ""
+        ts = str(manifest.get("timestamp") or "")
 
         integrity = _check_integrity(d, manifest)
         points.append(RestorePoint(
@@ -55,7 +55,29 @@ def list_restore_points(
             integrity=integrity,
         ))
 
+    points.sort(
+        key=lambda point: (
+            _timestamp_key(point.timestamp),
+            point.backup_id,
+        ),
+        reverse=True,
+    )
     return points
+
+
+def _timestamp_key(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d_%H%M%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _check_integrity(backup_dir: Path, manifest: dict) -> str:

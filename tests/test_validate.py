@@ -16,7 +16,7 @@ class DummyConsole:
 def test_validate_reports_missing_environment_variables(monkeypatch, tmp_path: Path):
     config = tmp_path / "odooctl.yml"
     config.write_text(
-        """project:\n  name: demo\n  odoo_version: \"19.0\"\nruntime:\n  compose_file: docker-compose.yml\nenvironments:\n  production:\n    branch: main\n    domain: odoo.example.com\n    db_name: odoo_prod\n    filestore_path: /var/lib/odoo/filestore/odoo_prod\npostgres:\n  password_env: ODOO_DB_PASSWORD\nodoo:\n  image: registry/odoo:latest\nbackups:\n  remote:\n    endpoint_env: S3_ENDPOINT\n    access_key_env: S3_ACCESS_KEY\n    secret_key_env: S3_SECRET_KEY\n"""
+        """project:\n  name: demo\n  odoo_version: \"19.0\"\nruntime:\n  compose_file: docker-compose.yml\nenvironments:\n  production:\n    branch: main\n    domain: odoo.example.com\n    db_name: odoo_prod\n    filestore_path: /var/lib/odoo/filestore/odoo_prod\npostgres:\n  password_env: ODOO_DB_PASSWORD\nodoo:\n  image: registry/odoo:latest\nbackups:\n  remote:\n    bucket: demo-backups\n    endpoint_env: S3_ENDPOINT\n    access_key_env: S3_ACCESS_KEY\n    secret_key_env: S3_SECRET_KEY\n"""
     )
     dummy_console = DummyConsole()
     monkeypatch.setattr(validate_cmd, "success", lambda message: dummy_console.print(message))
