@@ -127,6 +127,7 @@ def run_promote(
             cfg.odoo.service,
             tgt_env.db_name,
             tgt_env.update_modules,
+            cli_command=cfg.odoo.cli_command,
             db_host=cfg.odoo.db_host,
             db_user=cfg.odoo.db_user,
             db_password_env=cfg.odoo.db_password_env,

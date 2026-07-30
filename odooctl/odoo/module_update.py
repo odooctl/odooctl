@@ -9,11 +9,12 @@ def build_update_modules_args(
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     config_path: str | None = None,
 ) -> list[str]:
-    args = ["odoo", "-d", db_name, "-u", join_csv(modules), "--stop-after-init"]
+    args = [cli_command, "-d", db_name, "-u", join_csv(modules), "--stop-after-init"]
     if config_path:
         args.extend(["-c", config_path])
     if db_host:
@@ -42,6 +43,7 @@ def update_modules_local(
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     db_password_env: str | None = None,
@@ -54,6 +56,7 @@ def update_modules_local(
         build_update_modules_args(
             db_name,
             modules,
+            cli_command=cli_command,
             db_host=db_host,
             db_user=db_user,
             config_path=config_path,
@@ -69,6 +72,7 @@ def update_modules_compose(
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     db_password_env: str | None = None,
@@ -82,6 +86,7 @@ def update_modules_compose(
         build_update_modules_args(
             db_name,
             modules,
+            cli_command=cli_command,
             db_host=db_host,
             db_user=db_user,
             config_path=config_path,

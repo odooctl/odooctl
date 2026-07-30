@@ -39,3 +39,19 @@ class DeploymentMetadata(BaseModel):
     status: str
     health_check_url: str | None = None
     message: str | None = None
+
+
+class SanitizationMetadata(BaseModel):
+    schema_version: int = 1
+    project: str
+    source_environment: str
+    target_environment: str
+    database: str
+    timestamp: str = Field(default_factory=now_utc)
+    policy: str
+    native_status: str
+    profile: str
+    extension_statements: int
+    custom_sql_files: int
+    verification_checks: list[str] = Field(default_factory=list)
+    verified: bool = True

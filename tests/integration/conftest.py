@@ -85,12 +85,16 @@ backups:
 
 odoo:
   image: odoo:{version}
+  cli_command: odoo
   service: odoo
   config_path: /etc/odoo/odoo.conf
   db_host: db
   db_user: odoo
   db_password_env: ODOO_DB_PASSWORD
   filestore_container_path: /var/lib/odoo
+
+sanitization:
+  native_neutralize: required
 
 environments:
   production:

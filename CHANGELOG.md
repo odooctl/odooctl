@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`.github/labels.yml`) with automated sync, path-based PR auto-labeling,
   issue triage flow (`status/needs-triage`), a documentation issue
   template, issue-form contact links, `SUPPORT.md`, and GitHub Discussions.
+- Production-to-staging clone and cross-environment restore now run Odoo's
+  native `neutralize` command when available, followed by odooctl extension
+  sanitizers and fail-closed verification. Policies support `required`,
+  `preferred`, and `disabled`; results are recorded without secrets.
 
 ## [0.2.0] - 2026-07-19
 

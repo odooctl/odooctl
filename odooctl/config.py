@@ -173,6 +173,7 @@ class PostgresConfig(BaseModel):
 
 class OdooConfig(BaseModel):
     image: str
+    cli_command: str = "odoo"
     config_path: str = "/etc/odoo/odoo.conf"
     addons_paths: list[str] = Field(default_factory=list)
     service: str = "odoo"
@@ -186,6 +187,13 @@ class OdooConfig(BaseModel):
     @classmethod
     def service_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
         return validate_identifier(value, info.field_name)
+
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        if not value or not value.strip() or any(ch.isspace() for ch in value):
+            raise ValueError(f"{info.field_name} must be one executable path without whitespace")
+        return value
 
 
 class RemoteBackupConfig(BaseModel):
@@ -214,6 +222,7 @@ class BackupsConfig(BaseModel):
 
 
 class SanitizationConfig(BaseModel):
+    native_neutralize: Literal["required", "preferred", "disabled"] = "preferred"
     sql_files: list[str] = Field(default_factory=list)
     disable_mail_servers: bool = True
     disable_fetchmail: bool = True
@@ -223,6 +232,14 @@ class SanitizationConfig(BaseModel):
     disable_queue_jobs: bool = True
     purge_mail_queue: bool = True
     temp_db_suffix: str = "_incoming"
+
+    @field_validator("temp_db_suffix")
+    @classmethod
+    def temp_db_suffix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not value:
+            raise ValueError(f"{info.field_name} must not be empty")
+        validate_identifier(f"x{value}", info.field_name)
+        return value
 
 
 class RedactionConfig(BaseModel):
@@ -429,6 +446,7 @@ redaction:
 
 odoo:
   image: registry.example.com/odoo:19.0
+  cli_command: odoo
   config_path: /etc/odoo/odoo.conf
   service: odoo
   addons_paths:
@@ -457,6 +475,7 @@ environments:
       - custom_module
 
 sanitization:
+  native_neutralize: preferred
   sql_files:
     - .sanitize/staging.sql
     - .sanitize/disable_connectors.sql

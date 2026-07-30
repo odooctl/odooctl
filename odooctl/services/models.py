@@ -69,6 +69,7 @@ class RestoreResult:
 @dataclass
 class CloneResult:
     url: str
+    native_neutralization: str | None = None
 
 
 @dataclass
