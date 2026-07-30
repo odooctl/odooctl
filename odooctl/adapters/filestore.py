@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.config import EnvironmentConfig, OdooCtlConfig
 from odooctl.context import ProjectContext
 from odooctl.utils.paths import ensure_dir
@@ -137,7 +138,10 @@ class DockerVolumeFilestore:
     """
 
     def __init__(self, context: ProjectContext, cfg: OdooCtlConfig):
-        self.compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(context.root))
+        self.compose = make_runtime_adapter(
+            context,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
         self.service = cfg.odoo.service
         self.root = cfg.odoo.filestore_container_path.rstrip("/")
 

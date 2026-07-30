@@ -11,6 +11,7 @@ from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.filestore import FilestoreAdapter, make_filestore_adapter
 from odooctl.adapters.postgres import PostgresAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.odoo.healthcheck import check_url, with_db_selector
 from odooctl.odoo.neutralize import neutralize_database, probe_native_neutralization
 from odooctl.metadata.models import SanitizationMetadata
@@ -196,7 +197,10 @@ def restore_to_env(
     compose = None
     native_capability = None
     if source_is_protected:
-        compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+        compose = make_runtime_adapter(
+            ctx.project,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
         native_capability = probe_native_neutralization(cfg, compose=compose)
 
     pg = make_context_db_adapter(ctx.project) if cfg.runtime.execution_mode == "docker" else PostgresAdapter(cfg.postgres)

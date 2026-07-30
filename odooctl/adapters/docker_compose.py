@@ -4,6 +4,8 @@ from odooctl.utils.shell import run, run_capture_bytes, run_pipe_stdin
 from odooctl.utils.shell import CommandResult
 
 class DockerComposeAdapter:
+    runtime_type = "docker_compose"
+
     def __init__(self, compose_file: str = "docker-compose.yml", project_dir: str | None = None):
         self.compose_file = compose_file
         self.project_dir = project_dir

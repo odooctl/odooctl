@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.metadata.store import MetadataStore
 from odooctl.odoo.healthcheck import with_db_selector
 from odooctl.services.backup import git_commit
@@ -71,7 +72,10 @@ def _build_environment_summary(
 def get_status(ctx: ServiceContext, environment: str | None = None) -> StatusReport:
     cfg = ctx.project.config
     store = MetadataStore(ctx.project.state_dir)
-    compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+    compose = make_runtime_adapter(
+        ctx.project,
+        compose_adapter_cls=DockerComposeAdapter,
+    )
     ps = compose.ps()
     env_items = [(environment, cfg.env(environment))] if environment else list(cfg.environments.items())
     environments = [_build_environment_summary(name, env, cfg, store, ps) for name, env in env_items]

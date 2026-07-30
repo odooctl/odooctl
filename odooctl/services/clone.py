@@ -10,6 +10,7 @@ from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
 from odooctl.adapters.filestore import FilestoreAdapter, make_filestore_adapter
 from odooctl.adapters.postgres import PostgresAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
 from odooctl.odoo.db_swap import swap_temp_database
 from odooctl.odoo.healthcheck import check_url, with_db_selector
 from odooctl.odoo.module_update import update_modules_compose
@@ -43,9 +44,7 @@ def run_clone(
     if cfg.is_protected(source) and not should_sanitize:
         raise RuntimeError("Refusing to clone protected environment data without sanitization enabled")
 
-    compose_path = ctx.project.compose_file
-    if not compose_path.exists():
-        raise FileNotFoundError(f"Compose file not found: {compose_path}")
+    validate_runtime_definition(ctx.project)
 
     scheme = cfg.healthcheck.scheme or dst.scheme
     base_url = public_url(dst.domain, scheme=scheme, port=dst.port)
@@ -72,7 +71,10 @@ def run_clone(
                 raise FileNotFoundError(
                     f"Configured sanitization SQL file does not exist: {sql_file}"
                 )
-    compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+    compose = make_runtime_adapter(
+        ctx.project,
+        compose_adapter_cls=DockerComposeAdapter,
+    )
     native_capability = (
         probe_native_neutralization(cfg, compose=compose) if should_sanitize else None
     )
