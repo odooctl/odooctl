@@ -86,6 +86,7 @@ def run_deploy(ctx: ServiceContext, environment: str, branch: str | None = None)
             cfg.odoo.service,
             env.db_name,
             env.update_modules,
+            cli_command=cfg.odoo.cli_command,
             db_host=cfg.odoo.db_host,
             db_user=cfg.odoo.db_user,
             db_password_env=cfg.odoo.db_password_env,

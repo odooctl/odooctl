@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
+from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.filestore import FilestoreAdapter, make_filestore_adapter
 from odooctl.adapters.postgres import PostgresAdapter
 from odooctl.adapters.reverse_proxy import public_url
 from odooctl.odoo.healthcheck import check_url, with_db_selector
-from odooctl.odoo.sanitize import sanitize_database
+from odooctl.odoo.neutralize import neutralize_database, probe_native_neutralization
+from odooctl.metadata.models import SanitizationMetadata
+from odooctl.metadata.store import MetadataStore
 from odooctl.services.models import RestoreResult
 
 if TYPE_CHECKING:
@@ -134,23 +137,66 @@ def restore_to_env(
     backup_dir = resolve_backup_dir(source_environment, backup, ctx.project.backups_dir)
     # Validate checksums but skip environment-mismatch check (cross-env restore)
     validate_backup_dir(backup_dir, expected_project=cfg.project.name)
+    sanitization_sql_files = ctx.project.sanitization_sql_files()
+    if source_is_protected:
+        for sql_file in sanitization_sql_files:
+            if not sql_file.exists():
+                raise FileNotFoundError(
+                    f"Configured sanitization SQL file does not exist: {sql_file}"
+                )
 
     temp_db = env.db_name + cfg.sanitization.temp_db_suffix
+    if temp_db == env.db_name:
+        raise RuntimeError(
+            "Configured sanitization.temp_db_suffix must produce a temporary "
+            "database distinct from the target"
+        )
+
+    compose = None
+    native_capability = None
+    if source_is_protected:
+        compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+        native_capability = probe_native_neutralization(cfg, compose=compose)
 
     pg = make_context_db_adapter(ctx.project) if cfg.runtime.execution_mode == "docker" else PostgresAdapter(cfg.postgres)
     # Restore into temp DB, not the live target DB
     pg.restore(temp_db, backup_dir / "db.dump")
 
+    # Mirror clone safety contract: sanitize temp DB before swap when source is protected
+    neutralization = None
+    if source_is_protected:
+        neutralization = neutralize_database(
+            pg=pg,
+            db_name=temp_db,
+            env=env,
+            cfg=cfg,
+            sql_files=sanitization_sql_files,
+            compose=compose,
+            native_capability=native_capability,
+        )
+
+    # Preserve the live target filestore if neutralization fails.
     target_filestore = env.filestore_path if env.filestore_volume else str(ctx.project.resolve_path(env.filestore_path))
     fs = make_filestore_adapter(ctx.project, env) if env.filestore_volume else FilestoreAdapter()
     fs.restore_archive(backup_dir / "filestore.tar", target_filestore)
 
-    # Mirror clone safety contract: sanitize temp DB before swap when source is protected
-    if source_is_protected:
-        sanitize_database(pg, temp_db, env, cfg, sql_files=ctx.project.sanitization_sql_files())
-
     # Atomically promote temp DB into the target DB name
     swap_temp_database(pg, temp_db=temp_db, target_db=env.db_name, target_env_name=target_environment)
+    if neutralization:
+        MetadataStore(ctx.project.state_dir).save_sanitization(
+            SanitizationMetadata(
+                project=cfg.project.name,
+                source_environment=source_environment,
+                target_environment=target_environment,
+                database=env.db_name,
+                policy=neutralization.policy,
+                native_status=neutralization.native_status,
+                profile=neutralization.profile,
+                extension_statements=neutralization.extension_statements,
+                custom_sql_files=neutralization.custom_sql_files,
+                verification_checks=list(neutralization.verification_checks),
+            )
+        )
 
     scheme = cfg.healthcheck.scheme or env.scheme
     url = with_db_selector(
@@ -176,6 +222,11 @@ def run_restore(ctx: ServiceContext, environment: str, backup: str = "latest") -
     validate_backup_dir(backup_dir, expected_project=cfg.project.name, expected_environment=environment, restore_mode="full")
     pg = make_context_db_adapter(ctx.project) if cfg.runtime.execution_mode == "docker" else PostgresAdapter(cfg.postgres)
     temp_db = env.db_name + cfg.sanitization.temp_db_suffix
+    if temp_db == env.db_name:
+        raise RuntimeError(
+            "Configured sanitization.temp_db_suffix must produce a temporary "
+            "database distinct from the target"
+        )
     pg.restore(temp_db, backup_dir / "db.dump")
     target_filestore = env.filestore_path if env.filestore_volume else str(ctx.project.resolve_path(env.filestore_path))
     fs = make_filestore_adapter(ctx.project, env) if env.filestore_volume else FilestoreAdapter()

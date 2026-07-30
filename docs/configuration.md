@@ -16,9 +16,11 @@ Key sections:
 - `runtime`: Docker Compose file, reverse-proxy mode, and `execution_mode` (`docker` or `host`).
 - `environments`: per-environment branch, scheme/domain/port, database, filestore, clone source, sanitization flag, `db_selector`, and module update list.
 - `postgres`: host-side connection settings plus Docker service/internal-host settings for container-native operations.
-- `odoo`: image, config path, addons paths, service name, DB flags for module updates, and container filestore root.
+- `odoo`: image, native CLI command, config path, addons paths, service name,
+  DB flags for module updates, and container filestore root.
 - `backups`: local backup path, optional S3 remote storage, and retention policy.
-- `sanitization`: SQL files and built-in staging safety toggles.
+- `sanitization`: native Odoo neutralization policy, SQL extension files, and
+  built-in staging safety toggles.
 - `healthcheck`: path and retry timing used after clone/deploy/restore operations.
 - `redaction`: log-redaction policy for sensitive environment values.
 
@@ -65,6 +67,26 @@ environments:
 ```
 
 Keep production isolation stricter for real routed deployments.
+
+## Native Odoo neutralization
+
+Production-to-staging clone/restore uses Odoo's native `neutralize` command
+before applying odooctl's additional safeguards:
+
+```yaml
+odoo:
+  cli_command: odoo
+  addons_paths:
+    - /mnt/extra-addons
+
+sanitization:
+  native_neutralize: preferred
+```
+
+`preferred` is the default. Use `required` when every configured image is
+expected to support native neutralization, or `disabled` only when an image is
+known not to provide it. Addon paths are passed to the native command so custom
+module `neutralize.sql` files are included.
 
 ## S3 remote backups
 

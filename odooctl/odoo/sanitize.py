@@ -39,7 +39,29 @@ def baseline_sql(env: EnvironmentConfig, config: OdooCtlConfig) -> list[str]:
     """
     stmts: list[str] = []
     if config.sanitization.disable_mail_servers:
+        # Odoo's native neutralizer installs an active dummy SMTP server so
+        # command-line SMTP settings cannot become a fallback. Preserve that
+        # invariant even when native neutralization is unavailable.
         stmts.append(guarded_update("ir_mail_server", "UPDATE ir_mail_server SET active = false;"))
+        stmts.append(
+            guarded_update(
+                "ir_mail_server",
+                "INSERT INTO ir_mail_server "
+                "(name, smtp_port, smtp_host, smtp_encryption, active, smtp_authentication) "
+                "SELECT 'neutralization - disable emails', 1025, 'invalid', 'none', false, 'login' "
+                "WHERE NOT EXISTS (SELECT 1 FROM ir_mail_server "
+                "WHERE name = 'neutralization - disable emails' AND smtp_host = 'invalid');",
+            )
+        )
+        stmts.append(
+            guarded_update(
+                "ir_mail_server",
+                "UPDATE ir_mail_server SET active = true, smtp_port = 1025, "
+                "smtp_host = 'invalid', smtp_encryption = 'none', smtp_authentication = 'login' "
+                "WHERE id = (SELECT MIN(id) FROM ir_mail_server "
+                "WHERE name = 'neutralization - disable emails' AND smtp_host = 'invalid');",
+            )
+        )
     if config.sanitization.disable_fetchmail:
         stmts.append(guarded_update("fetchmail_server", "UPDATE fetchmail_server SET active = false;"))
     if config.sanitization.disable_crons:
@@ -51,31 +73,45 @@ def baseline_sql(env: EnvironmentConfig, config: OdooCtlConfig) -> list[str]:
         stmts.append(guarded_update("payment_acquirer", "UPDATE payment_acquirer SET state = 'disabled' WHERE state != 'disabled';"))
     if config.sanitization.disable_queue_jobs:
         stmts.append(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.queue_job') IS NOT NULL THEN "
-            "UPDATE queue_job SET state = 'cancelled' WHERE state NOT IN ('done', 'cancelled'); "
-            "END IF; END $$;"
+            guarded_update(
+                "queue_job",
+                "UPDATE queue_job SET state = 'cancelled' "
+                "WHERE state NOT IN ('done', 'cancelled');",
+            )
         )
         stmts.append(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.base_automation') IS NOT NULL THEN "
-            "UPDATE base_automation SET active = false WHERE active = true; "
-            "END IF; END $$;"
+            guarded_update(
+                "base_automation",
+                "UPDATE base_automation SET active = false WHERE active = true;",
+            )
         )
     if config.sanitization.purge_mail_queue:
         stmts.append(
-            "DO $$ BEGIN "
-            "IF to_regclass('public.mail_mail') IS NOT NULL THEN "
-            "DELETE FROM mail_mail WHERE state != 'sent'; "
-            "END IF; END $$;"
+            guarded_update(
+                "mail_mail",
+                "DELETE FROM mail_mail WHERE state != 'sent';",
+            )
         )
     stmts.append(
         "UPDATE ir_config_parameter SET value = '' "
         "WHERE key ILIKE '%webhook%' OR key ILIKE '%callback%' OR key ILIKE '%endpoint_url%';"
     )
     stmts.append(
+        guarded_column_update(
+            "ir_act_server",
+            "webhook_url",
+            "UPDATE ir_act_server SET webhook_url = 'neutralization - disable webhook' "
+            "WHERE state = 'webhook';",
+        )
+    )
+    stmts.append(
         "UPDATE ir_config_parameter SET value = '' "
         "WHERE key ILIKE '%api_key%' OR key ILIKE '%secret%' OR key ILIKE '%token%' OR key ILIKE '%password%';"
+    )
+    stmts.append(
+        "INSERT INTO ir_config_parameter (key, value) "
+        "VALUES ('database.is_neutralized', 'True') "
+        "ON CONFLICT (key) DO UPDATE SET value = 'True';"
     )
     if config.sanitization.rewrite_base_url:
         scheme = config.healthcheck.scheme or env.scheme
@@ -130,6 +166,138 @@ def profile_sql(profile: str, env: EnvironmentConfig, config: OdooCtlConfig) -> 
         extra = ["UPDATE ir_config_parameter SET value = '' WHERE key LIKE 'auth_%';"]
         stmts = extra + stmts
     return stmts
+
+
+def _assert_no_rows(name: str, predicate_sql: str) -> tuple[str, str]:
+    escaped_name = name.replace("'", "''")
+    return (
+        name,
+        "DO $$ BEGIN "
+        f"IF EXISTS ({predicate_sql}) THEN "
+        f"RAISE EXCEPTION 'sanitization verification failed: {escaped_name}'; "
+        "END IF; END $$;",
+    )
+
+
+def _assert_no_rows_when(
+    name: str,
+    *,
+    guard_sql: str,
+    predicate_sql: str,
+) -> tuple[str, str]:
+    """Build a check whose optional-table query is planned only after its guard.
+
+    PostgreSQL plans static statements in a PL/pgSQL block before evaluating an
+    ``IF`` condition. Dynamic execution is therefore required when a module
+    table or column may not exist in the restored database.
+    """
+    escaped_name = name.replace("'", "''")
+    escaped_query = f"SELECT EXISTS ({predicate_sql})".replace("'", "''")
+    return (
+        name,
+        "DO $$ DECLARE unsafe_rows boolean := false; BEGIN "
+        f"IF {guard_sql} THEN "
+        f"EXECUTE '{escaped_query}' INTO unsafe_rows; "
+        "IF unsafe_rows THEN "
+        f"RAISE EXCEPTION 'sanitization verification failed: {escaped_name}'; "
+        "END IF; END IF; END $$;",
+    )
+
+
+def verification_checks(
+    profile: str,
+    env: EnvironmentConfig,
+    config: OdooCtlConfig,
+) -> list[tuple[str, str]]:
+    """Return fail-closed SQL checks for mandatory post-neutralization state."""
+    # Validate the profile even though most checks are baseline checks.
+    profile_sql(profile, env, config)
+    checks: list[tuple[str, str]] = []
+    if config.sanitization.disable_mail_servers:
+        checks.append(
+            (
+                "outgoing mail routed to neutralization sink",
+                "DO $$ BEGIN "
+                "IF (SELECT COUNT(*) FROM ir_mail_server WHERE active = true) <> 1 "
+                "OR EXISTS (SELECT 1 FROM ir_mail_server WHERE active = true "
+                "AND (name != 'neutralization - disable emails' OR smtp_host != 'invalid')) THEN "
+                "RAISE EXCEPTION 'sanitization verification failed: outgoing mail sink'; "
+                "END IF; END $$;",
+            )
+        )
+    if config.sanitization.disable_fetchmail:
+        checks.append(
+            _assert_no_rows_when(
+                "incoming mail servers disabled",
+                guard_sql="to_regclass('public.fetchmail_server') IS NOT NULL",
+                predicate_sql="SELECT 1 FROM fetchmail_server WHERE active = true",
+            )
+        )
+    if config.sanitization.disable_crons:
+        checks.append(
+            _assert_no_rows(
+                "scheduled actions disabled",
+                "SELECT 1 FROM ir_cron WHERE active = true",
+            )
+        )
+    if config.sanitization.disable_payment_providers:
+        checks.extend(
+            [
+                _assert_no_rows_when(
+                    "payment providers disabled",
+                    guard_sql="to_regclass('public.payment_provider') IS NOT NULL",
+                    predicate_sql=(
+                        "SELECT 1 FROM payment_provider WHERE state != 'disabled'"
+                    ),
+                ),
+                _assert_no_rows_when(
+                    "legacy payment acquirers disabled",
+                    guard_sql="to_regclass('public.payment_acquirer') IS NOT NULL",
+                    predicate_sql=(
+                        "SELECT 1 FROM payment_acquirer WHERE state != 'disabled'"
+                    ),
+                ),
+            ]
+        )
+    checks.append(
+        _assert_no_rows_when(
+            "server action webhooks neutralized",
+            guard_sql=(
+                "EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'ir_act_server' "
+                "AND column_name = 'webhook_url')"
+            ),
+            predicate_sql=(
+                "SELECT 1 FROM ir_act_server WHERE state = 'webhook' "
+                "AND webhook_url != 'neutralization - disable webhook'"
+            ),
+        )
+    )
+    if config.sanitization.rewrite_base_url:
+        scheme = config.healthcheck.scheme or env.scheme
+        expected_url = public_url(env.domain, scheme=scheme, port=env.port).replace("'", "''")
+        checks.append(
+            _assert_no_rows(
+                "base URL rewritten",
+                "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ir_config_parameter "
+                f"WHERE key = 'web.base.url' AND value = '{expected_url}')",
+            )
+        )
+        checks.append(
+            _assert_no_rows(
+                "base URL frozen",
+                "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ir_config_parameter "
+                "WHERE key = 'web.base.url.freeze' AND lower(value) = 'true')",
+            )
+        )
+    checks.append(
+        _assert_no_rows(
+            "database marked neutralized",
+            "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ir_config_parameter "
+            "WHERE key = 'database.is_neutralized' AND lower(value) = 'true')",
+        )
+    )
+    return checks
 
 
 def sanitize_database(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from odooctl.utils.shell import run, run_capture_bytes, run_pipe_stdin
+from odooctl.utils.shell import CommandResult
 
 class DockerComposeAdapter:
     def __init__(self, compose_file: str = "docker-compose.yml", project_dir: str | None = None):
@@ -42,7 +43,8 @@ class DockerComposeAdapter:
         *,
         stream: bool = True,
         extra_env: dict[str, str] | None = None,
-    ) -> None:
+        check: bool = True,
+    ) -> CommandResult:
         """Run a command inside a compose service.
 
         ``extra_env`` values are injected into the container via name-only
@@ -52,11 +54,12 @@ class DockerComposeAdapter:
         env_flags: list[str] = []
         for name in extra_env or {}:
             env_flags.extend(["-e", name])
-        run(
+        return run(
             self._cmd("exec", "-T", *env_flags, service, *args),
             cwd=self.project_dir,
             env=extra_env,
             stream=stream,
+            check=check,
         )
 
     def exec_capture_bytes(self, service: str, args: list[str], *, stdout_path: str | Path) -> None:

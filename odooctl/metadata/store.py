@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from odooctl.metadata.models import BackupManifest, DeploymentMetadata
+from odooctl.metadata.models import BackupManifest, DeploymentMetadata, SanitizationMetadata
 from odooctl.utils.paths import ensure_dir
 
 class MetadataStore:
@@ -9,6 +9,7 @@ class MetadataStore:
         self.root = ensure_dir(root)
         ensure_dir(self.root / "deployments")
         ensure_dir(self.root / "backups")
+        ensure_dir(self.root / "sanitizations")
 
     def save_deployment(self, metadata: DeploymentMetadata) -> Path:
         path = self.root / "deployments" / f"{metadata.environment}-{metadata.timestamp.replace(':','')}.json"
@@ -20,6 +21,14 @@ class MetadataStore:
         path = self.root / "backups" / f"{backup_id}.json"
         path.write_text(manifest.model_dump_json(indent=2))
         (self.root / "backups" / f"{manifest.environment}-latest.json").write_text(manifest.model_dump_json(indent=2))
+        return path
+
+    def save_sanitization(self, metadata: SanitizationMetadata) -> Path:
+        timestamp = metadata.timestamp.replace(":", "")
+        path = self.root / "sanitizations" / f"{metadata.target_environment}-{timestamp}.json"
+        path.write_text(metadata.model_dump_json(indent=2))
+        latest = self.root / "sanitizations" / f"{metadata.target_environment}-latest.json"
+        latest.write_text(metadata.model_dump_json(indent=2))
         return path
 
     def latest_deployment(self, environment: str) -> dict | None:

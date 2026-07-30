@@ -9,6 +9,7 @@ from odooctl.odoo.sanitize import (
     guarded_update,
     profile_sql,
     sanitize_database,
+    verification_checks,
 )
 
 
@@ -37,6 +38,16 @@ def test_default_sanitization_disables_dangerous_integrations(tmp_path: Path):
     assert "base_automation" in sql
     assert "mail_mail" in sql
     assert "https://staging.odoo.example.com" in sql
+
+
+def test_sanitization_preserves_exactly_one_invalid_outgoing_mail_sink(tmp_path: Path):
+    cfg = _config(tmp_path)
+    sql = "\n".join(default_sql(cfg.env("staging"), cfg))
+
+    assert "UPDATE ir_mail_server SET active = false" in sql
+    assert "neutralization - disable emails" in sql
+    assert "smtp_host = ''invalid''" in sql
+    assert "WHERE id = (SELECT MIN(id)" in sql
 
 
 def test_missing_configured_sanitization_sql_fails(tmp_path: Path, monkeypatch):
@@ -98,6 +109,8 @@ def test_default_sanitization_scrubs_webhooks_and_environment_secrets(tmp_path: 
 
     assert "webhook" in sql
     assert "callback" in sql
+    assert "ir_act_server" in sql
+    assert "neutralization - disable webhook" in sql
     assert "api_key" in sql
     assert "secret" in sql
     assert "token" in sql
@@ -188,3 +201,16 @@ def test_guarded_helpers_escape_single_quotes():
     assert "''disabled''" in stmt
     stmt = guarded_column_update("t", "c", "UPDATE t SET c = 'x';")
     assert "''x''" in stmt
+
+
+def test_optional_table_verification_queries_are_planned_dynamically(tmp_path: Path):
+    cfg = _config(tmp_path)
+    checks = dict(verification_checks("normal", cfg.env("staging"), cfg))
+
+    for name in (
+        "incoming mail servers disabled",
+        "payment providers disabled",
+        "legacy payment acquirers disabled",
+        "server action webhooks neutralized",
+    ):
+        assert "EXECUTE 'SELECT EXISTS (" in checks[name]
