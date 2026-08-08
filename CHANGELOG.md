@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0b1] - 2026-08-08
+
 ### Changed
 
 - **License changed from MIT to AGPL-3.0-or-later** with a commercial
@@ -212,6 +214,7 @@ secret redaction, optional real S3 uploads, documentation, and tests.
 - `odooctl doctor` warns when referenced secrets are shorter than the
   configured minimum or fall on the redaction ignore list.
 
-[Unreleased]: https://github.com/odooctl/odooctl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/odooctl/odooctl/compare/v0.3.0b1...HEAD
+[0.3.0b1]: https://github.com/odooctl/odooctl/compare/v0.2.0...v0.3.0b1
 [0.2.0]: https://github.com/odooctl/odooctl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/odooctl/odooctl/releases/tag/v0.1.0
