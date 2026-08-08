@@ -8,6 +8,7 @@ import yaml
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
+from conftest import strip_ansi
 from odooctl.config import load_config
 from odooctl.main import app
 from odooctl.services import local_cluster as local_service
@@ -428,4 +429,4 @@ def test_local_down_cli_requires_explicit_yes(tmp_path: Path):
     )
 
     assert result.exit_code != 0
-    assert "local down requires --yes" in result.output
+    assert "local down requires --yes" in strip_ansi(result.output)

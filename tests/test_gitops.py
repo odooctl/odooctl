@@ -8,6 +8,7 @@ import yaml
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
+from conftest import strip_ansi
 from odooctl.config import load_config
 from odooctl.main import app
 from odooctl.services import gitops as gitops_service
@@ -223,4 +224,4 @@ def test_cleanup_cli_requires_explicit_yes(tmp_path: Path):
     )
 
     assert result.exit_code != 0
-    assert "--apply requires --yes" in result.output
+    assert "--apply requires --yes" in strip_ansi(result.output)

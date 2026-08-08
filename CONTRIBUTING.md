@@ -74,6 +74,19 @@ Keep the `--frozen` flag. Without it `uv run` may silently update
 `uv.lock` before running, so a green local check would no longer prove the
 locked environment is green.
 
+If you touch CLI output or assert on it, also run the suite the way Actions
+does:
+
+```bash
+GITHUB_ACTIONS=true uv run --frozen pytest -q
+```
+
+Typer enables Rich colour when `GITHUB_ACTIONS` is set, and Rich's
+highlighter splits option tokens while styling them, so `--yes` is not
+present as a literal substring in coloured output. Assertions on CLI text
+must go through `strip_ansi` from `tests/conftest.py`. Without this env var
+such a test passes locally and fails only on CI.
+
 ### Changing dependencies
 
 `uv.lock` is authoritative. When you add or bump a dependency, edit

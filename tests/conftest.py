@@ -8,9 +8,31 @@ environment. Individual tests that need a secret can opt in by setting it with
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 from pytest import ExitCode
+
+
+_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    """Return ``text`` with SGR colour escapes removed.
+
+    Typer sets ``FORCE_TERMINAL`` whenever ``GITHUB_ACTIONS`` is present, so
+    Rich renders CLI error panels in colour on Actions but in plain text on a
+    developer machine or in a bare container. Rich's highlighter then *splits*
+    option tokens while styling them — ``--yes`` is emitted as ``-``, a reset,
+    then ``-yes`` — so the literal substring ``"--yes"`` does not appear in the
+    coloured bytes at all.
+
+    Assertions on CLI output must therefore strip first, or they pass
+    everywhere except CI. Setting ``NO_COLOR`` or ``TERM=dumb`` does not help:
+    Typer resolves its colour settings at import time and force-terminal wins.
+    """
+
+    return _ANSI_SGR.sub("", text)
 
 
 # Environment variable names used by example configs and remote-backup tests.
