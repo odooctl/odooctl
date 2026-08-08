@@ -20,6 +20,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: '3.12'
           enable-cache: true
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "${GITHUB_REF_NAME}" = "v${package_version}"
       - name: Install locked environment
         run: uv sync --frozen --extra dev --extra api
       - name: Run tests
@@ -57,3 +61,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, 'b') }}
+          make_latest: ${{ contains(github.ref_name, 'b') && 'false' || 'true' }}
