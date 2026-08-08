@@ -32,10 +32,18 @@ def run_preflight(ctx: ProjectContext) -> list[CheckResult]:
     checks: list[CheckResult] = [
         CheckResult("config", True, f"config loaded: {ctx.config_path}"),
         _exists_check("project_root", ctx.root, kind="project root"),
-        _exists_check("compose_file", ctx.compose_file, kind="compose file"),
+        (
+            _exists_check("compose_file", ctx.compose_file, kind="compose file")
+            if cfg.runtime.type == "docker_compose"
+            else CheckResult(
+                name="kubernetes_runtime",
+                ok=True,
+                message="resources are rendered from odooctl.yml",
+            )
+        ),
     ]
 
-    missing_env = cfg.missing_env_vars()
+    missing_env = cfg.missing_env_vars(include_snapshot=True)
     if missing_env:
         checks.append(CheckResult("environment", False, "missing environment variables: " + ", ".join(missing_env)))
     else:
@@ -44,7 +52,7 @@ def run_preflight(ctx: ProjectContext) -> list[CheckResult]:
     weak_secret_vars: list[str] = []
     ignored_secret_vars: list[str] = []
     ignored_values = set(cfg.redaction.ignore_values)
-    for env_name in cfg.referenced_env_vars():
+    for env_name in cfg.referenced_env_vars(include_snapshot=True):
         value = os.getenv(env_name)
         if not value:
             continue

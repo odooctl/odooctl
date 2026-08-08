@@ -18,10 +18,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A workload runtime protocol and central factory for deploy, restart, exec,
+  logs, status, and Odoo command execution. Docker Compose remains the
+  configuration-compatible default.
+- A project/environment-scoped Kubernetes runtime with canonical Deployment,
+  Service, Ingress, filestore PVC, and Namespace rendering; secret-key
+  references; exec/log/rollout/status support; and fail-closed ownership
+  labels. Externally managed PostgreSQL is the default, with CloudNativePG
+  integration documented.
+- Declarative GitOps environment overlays and deterministic pull-request
+  environments with isolated namespace/domain/database/filestore identities,
+  fail-closed neutralized clone initialization, expiry metadata, guarded
+  cleanup, and GitHub Actions/Argo CD examples.
+- Validated recreate, rolling, blue/green, and NGINX canary strategies with
+  revision-owned candidates, stable-Service promotion, Odoo readiness/public
+  health gates, native or selector-based automated rollback, and explicit
+  shared-database schema-migration limitations.
+- Reproducible, path-scoped k3d clusters that reuse production Kubernetes
+  resources, add disposable PostgreSQL, generate grouped Tilt resources with
+  image rebuild/live sync, exercise deploy/native neutralize/backup/restore/
+  progressive rollback in a smoke lifecycle, and require an exact ownership
+  record for teardown.
+- Policy-controlled remote portable backups with `required`, `best_effort`,
+  and `disabled` modes; post-upload byte verification; project-scoped S3
+  namespaces; globally unique 24-hex-suffixed backup IDs; UTC
+  daily/weekly/monthly GFS retention with a completed-backup concurrency grace;
+  abandonment-marker/grace-period orphan reconciliation; plus the
+  `backup-remote list`, `backup-remote verify`, and `backup-remote download`
+  commands.
+- Schedule generation for verified backups, remote verification, and DR drills,
+  including systemd `EnvironmentFile=` and cron environment-file loading.
+- Isolated DR drills that restore the newest owned backup into disposable
+  PostgreSQL-on-tmpfs and Odoo containers on an internal network, with
+  drill-only filestore/config volumes, loopback-only health probing, exact
+  project/environment validation, and exhaustive teardown after partial
+  failure.
 - Open-source contribution infrastructure: label taxonomy
   (`.github/labels.yml`) with automated sync, path-based PR auto-labeling,
   issue triage flow (`status/needs-triage`), a documentation issue
   template, issue-form contact links, `SUPPORT.md`, and GitHub Discussions.
+- Production-to-staging clone and cross-environment restore now run Odoo's
+  native `neutralize` command when available, followed by odooctl extension
+  sanitizers and fail-closed verification. Policies support `required`,
+  `preferred`, and `disabled`; results are recorded without secrets.
+- Provider-native DR snapshots for AWS EBS multi-volume sets and Hetzner
+  Cloud server disks, with a separate durable requested/pending/complete/failed
+  manifest index, one config-bound environment/source identity, canonical
+  provider scope and reconstruction metadata, explicit consistency labels,
+  reconciliation after interruption, bound protected-environment pre-deploy
+  policy, plan-only recovery by default, idempotent isolated recovery resources
+  (including private-network-only Hetzner servers), partial-resource tracking,
+  and exact snapshot/resource confirmation before execution.
+- PostgreSQL WAL archiving and point-in-time recovery with an independent
+  S3-compatible archive, immutable WAL receipts, verified physical base
+  backups, recovery-graph retention, isolated digest-pinned recovery,
+  restore-to-new-database verification, crash-reconcilable OID-fenced cutover,
+  and compare-and-swap cross-host leases with explicit expired-lease recovery.
+- A filestore backend and migration contract for local paths, Docker volumes,
+  POSIX-mounted object storage, S3-compatible content-addressed mirrors, and
+  operator-selected Odoo storage modules. The new `odooctl filestore` workflow
+  plans immutable inventories, syncs and reads back SHA-256 checksums, performs
+  compare-and-swap cutover, and keeps source and remote-content deletion behind
+  separate exact-confirmation controls.
+
+### Security
+
+- Removed remote-destination ambiguity: unavailable S3 dependencies,
+  credentials, or provider access now follow the configured policy and never
+  count another destination as an off-host copy.
+- DR drills no longer restore into the live PostgreSQL cluster or live Odoo
+  filestore. Generated database credentials remain off argv, the drill has no
+  external network egress, and cleanup failure is reported as drill failure.
 
 ## [0.2.0] - 2026-07-19
 

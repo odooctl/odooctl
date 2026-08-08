@@ -7,7 +7,14 @@ from typing import Literal
 
 import yaml
 import click
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 # Defense-in-depth input validation (audit findings C3/F8). These values flow
 # into subprocess argv, container paths, docker volume names, and Traefik YAML,
@@ -76,6 +83,271 @@ class RuntimeConfig(BaseModel):
     execution_mode: Literal["docker", "host"] = "host"
 
 
+class KubernetesSecretKeyRef(BaseModel):
+    """Reference to one key in an existing Kubernetes Secret."""
+
+    name: str
+    key: str
+
+    @field_validator("name")
+    @classmethod
+    def name_must_be_dns_safe(cls, value: str) -> str:
+        if (
+            len(value) > 253
+            or not re.fullmatch(r"[a-z0-9]([-a-z0-9.]*[a-z0-9])?", value)
+        ):
+            raise ValueError("kubernetes secret name must be a DNS-safe name")
+        return value
+
+    @field_validator("key")
+    @classmethod
+    def key_must_be_safe(cls, value: str) -> str:
+        if len(value) > 253 or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+            raise ValueError("kubernetes secret key contains unsafe characters")
+        return value
+
+
+class KubernetesRuntimeConfig(BaseModel):
+    type: Literal["kubernetes"] = "kubernetes"
+    context: str | None = None
+    namespace_template: str = "{project}-{environment}"
+    manifests_path: str = ".odooctl/rendered/kubernetes"
+    reverse_proxy: Literal["ingress"] = "ingress"
+    execution_mode: Literal["host"] = "host"
+    kubectl_command: str = "kubectl"
+    ingress_class: str | None = None
+    replicas: int = Field(default=1, ge=1, le=100)
+    service_port: int = Field(default=8069, ge=1, le=65535)
+    container_port: int = Field(default=8069, ge=1, le=65535)
+    image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = "IfNotPresent"
+    filestore_claim_size: str = "10Gi"
+    storage_class: str | None = None
+    postgres_mode: Literal["external", "cloudnativepg"] = "external"
+    canary_provider: Literal["none", "nginx"] = "none"
+    secret_refs: dict[str, KubernetesSecretKeyRef] = Field(default_factory=dict)
+
+    @field_validator("context", "ingress_class")
+    @classmethod
+    def optional_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return None
+        return validate_identifier(value, f"kubernetes {info.field_name}")
+
+    @field_validator("kubectl_command")
+    @classmethod
+    def kubectl_command_must_be_a_name(cls, value: str) -> str:
+        if value not in {"kubectl", "k3s"}:
+            raise ValueError("kubectl_command must be 'kubectl' or 'k3s'")
+        return value
+
+    @field_validator("namespace_template")
+    @classmethod
+    def namespace_template_must_be_bounded(cls, value: str) -> str:
+        unknown = re.sub(r"\{(?:project|environment)\}", "", value)
+        if "{" in unknown or "}" in unknown:
+            raise ValueError(
+                "namespace_template may only use {project} and {environment}"
+            )
+        if not value or len(value) > 128:
+            raise ValueError("namespace_template must be between 1 and 128 characters")
+        return value
+
+    @field_validator("manifests_path")
+    @classmethod
+    def manifests_path_must_be_relative(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("manifests_path must be a project-relative path")
+        return value
+
+    @field_validator("secret_refs")
+    @classmethod
+    def secret_env_names_must_be_safe(
+        cls,
+        value: dict[str, KubernetesSecretKeyRef],
+    ) -> dict[str, KubernetesSecretKeyRef]:
+        env_pattern = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+        for name in value:
+            if not env_pattern.fullmatch(name):
+                raise ValueError(
+                    f"kubernetes secret environment name {name!r} is invalid"
+                )
+        return value
+
+
+class FilestoreObjectStoreConfig(BaseModel):
+    """S3-compatible object namespace used by filestore backends."""
+
+    bucket: str
+    prefix: str = ""
+    region: str | None = None
+    endpoint_env: str | None = None
+    access_key_env: str | None = None
+    secret_key_env: str | None = None
+    session_token_env: str | None = None
+    region_env: str | None = None
+    encryption_algorithm: Literal["AES256", "aws:kms"] | None = None
+    encryption_key_env: str | None = None
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(character) < 32 for character in normalized)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a non-empty S3 bucket name "
+                "without path separators"
+            )
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if (
+            value.startswith("/")
+            or "\\" in value
+            or any(ord(character) < 32 for character in value)
+            or any(part in {".", ".."} for part in PurePosixPath(normalized).parts)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a safe relative POSIX object prefix"
+            )
+        return normalized
+
+    @field_validator(
+        "endpoint_env",
+        "access_key_env",
+        "secret_key_env",
+        "session_token_env",
+        "region_env",
+        "encryption_key_env",
+    )
+    @classmethod
+    def env_references_must_be_names(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def credentials_and_encryption_must_be_complete(
+        self,
+    ) -> "FilestoreObjectStoreConfig":
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "filestore object_store access_key_env and secret_key_env "
+                "must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "filestore object_store session_token_env requires static credentials"
+            )
+        if self.encryption_key_env and self.encryption_algorithm != "aws:kms":
+            raise ValueError(
+                "filestore object_store encryption_key_env requires "
+                "encryption_algorithm 'aws:kms'"
+            )
+        return self
+
+
+class FilestoreBackendConfig(BaseModel):
+    """Explicit live/mirror backend contract for one Odoo environment."""
+
+    type: Literal[
+        "local",
+        "docker_volume",
+        "object_mirror",
+        "posix_object_mount",
+        "odoo_module",
+    ]
+    object_store: FilestoreObjectStoreConfig | None = None
+    mount_path: str | None = None
+    source_path: str | None = None
+    module_name: str | None = None
+
+    @field_validator("mount_path", "source_path")
+    @classmethod
+    def filesystem_paths_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        from pathlib import PurePosixPath
+
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        path = PurePosixPath(value)
+        if ".." in path.parts or not path.name:
+            raise ValueError(
+                f"{info.field_name} must reference a named directory "
+                "without '..' path segments"
+            )
+        return value
+
+    @field_validator("module_name")
+    @classmethod
+    def module_name_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, info.field_name)
+
+    @model_validator(mode="after")
+    def mode_fields_must_be_explicit(self) -> "FilestoreBackendConfig":
+        if self.type in {"object_mirror", "odoo_module"} and self.object_store is None:
+            raise ValueError(f"filestore backend {self.type} requires object_store")
+        if self.type == "posix_object_mount" and not self.mount_path:
+            raise ValueError("posix_object_mount requires mount_path")
+        if self.type == "odoo_module" and not self.module_name:
+            raise ValueError("odoo_module requires module_name")
+        if self.type in {"local", "docker_volume"} and any(
+            (self.object_store, self.mount_path, self.source_path, self.module_name)
+        ):
+            raise ValueError(
+                f"filestore backend {self.type} does not accept target integration fields"
+            )
+        if self.type == "object_mirror" and any(
+            (self.mount_path, self.module_name)
+        ):
+            raise ValueError(
+                "filestore backend object_mirror does not accept "
+                "mount_path or module_name"
+            )
+        if self.type == "posix_object_mount" and any(
+            (self.object_store, self.module_name)
+        ):
+            raise ValueError(
+                "filestore backend posix_object_mount does not accept "
+                "object_store or module_name"
+            )
+        if self.type == "odoo_module" and self.mount_path:
+            raise ValueError(
+                "filestore backend odoo_module does not accept mount_path"
+            )
+        return self
+
+
 class EnvironmentConfig(BaseModel):
     stack: str = "default"
     tier: Literal["production", "staging", "development", "qa"] | None = None
@@ -87,6 +359,7 @@ class EnvironmentConfig(BaseModel):
     db_name: str
     filestore_path: str
     filestore_volume: str | None = None
+    filestore_backend: FilestoreBackendConfig | None = None
     db_selector: bool = False
     clone_from: str | None = None
     sanitize: bool = False
@@ -94,6 +367,9 @@ class EnvironmentConfig(BaseModel):
     promotes_to: str | None = None
     auto_deploy: bool = False
     last_deployed_commit: str | None = None
+    rollout_strategy: Literal["recreate", "rolling", "blue_green", "canary"] = "recreate"
+    canary_percent: int = Field(default=10, ge=1, le=50)
+    auto_rollback: bool = True
 
     @field_validator("db_name", "filestore_volume")
     @classmethod
@@ -130,6 +406,27 @@ class EnvironmentConfig(BaseModel):
                 f"{info.field_name} {display!r} must reference a named directory, not a root path"
             )
         return value
+
+    @model_validator(mode="after")
+    def filestore_backend_must_match_legacy_location(self) -> "EnvironmentConfig":
+        backend = self.filestore_backend
+        if backend is None:
+            return self
+        if backend.type == "local" and self.filestore_volume:
+            raise ValueError(
+                "filestore_backend.type local cannot be combined with filestore_volume"
+            )
+        if backend.type == "docker_volume" and not self.filestore_volume:
+            raise ValueError(
+                "filestore_backend.type docker_volume requires filestore_volume"
+            )
+        return self
+
+    @property
+    def effective_filestore_backend(self) -> str:
+        if self.filestore_backend is not None:
+            return self.filestore_backend.type
+        return "docker_volume" if self.filestore_volume else "local"
 
 
 class PostgresConfig(BaseModel):
@@ -173,6 +470,7 @@ class PostgresConfig(BaseModel):
 
 class OdooConfig(BaseModel):
     image: str
+    cli_command: str = "odoo"
     config_path: str = "/etc/odoo/odoo.conf"
     addons_paths: list[str] = Field(default_factory=list)
     service: str = "odoo"
@@ -187,24 +485,85 @@ class OdooConfig(BaseModel):
     def service_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
         return validate_identifier(value, info.field_name)
 
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        if not value or not value.strip() or any(ch.isspace() for ch in value):
+            raise ValueError(f"{info.field_name} must be one executable path without whitespace")
+        return value
+
 
 class RemoteBackupConfig(BaseModel):
-    type: str = "s3"
+    type: Literal["s3"] = "s3"
     bucket: str | None = None
     region: str | None = None
     prefix: str = ""
     endpoint_env: str | None = None
     access_key_env: str | None = None
     secret_key_env: str | None = None
+    session_token_env: str | None = None
     region_env: str | None = None
     encryption_algorithm: str | None = None
     encryption_key_env: str | None = None
+    policy: Literal["required", "best_effort", "disabled"] = "best_effort"
+    verify_after_upload: bool = True
+    orphan_grace_hours: int = Field(default=24, ge=1)
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(ch) < 32 for ch in normalized)
+        ):
+            raise ValueError(f"{info.field_name} must be a non-empty S3 bucket name without path separators")
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if "\\" in value or any(ord(ch) < 32 for ch in value):
+            raise ValueError(f"{info.field_name} must be a safe POSIX object-key prefix")
+        if normalized:
+            parts = PurePosixPath(normalized).parts
+            if value.startswith("/") or any(part in {".", ".."} for part in parts):
+                raise ValueError(f"{info.field_name} must be relative and must not contain '.' or '..' segments")
+        return normalized
+
+    @model_validator(mode="after")
+    def active_remote_requires_bucket(self) -> "RemoteBackupConfig":
+        if self.policy != "disabled" and not self.bucket:
+            raise ValueError("remote backup bucket is required unless policy is disabled")
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "remote backup access_key_env and secret_key_env must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "remote backup session_token_env requires access_key_env "
+                "and secret_key_env"
+            )
+        if self.encryption_key_env and not self.encryption_algorithm:
+            raise ValueError(
+                "remote backup encryption_key_env requires encryption_algorithm"
+            )
+        return self
 
 
 class RetentionConfig(BaseModel):
-    daily: int = 7
-    weekly: int = 4
-    monthly: int = 6
+    daily: int = Field(default=7, ge=0)
+    weekly: int = Field(default=4, ge=0)
+    monthly: int = Field(default=6, ge=0)
+    grace_hours: int = Field(default=1, ge=1)
 
 
 class BackupsConfig(BaseModel):
@@ -213,7 +572,333 @@ class BackupsConfig(BaseModel):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
 
 
+class WalArchiveS3Config(BaseModel):
+    """Independent S3-compatible destination for PostgreSQL WAL archives."""
+
+    type: Literal["s3"] = "s3"
+    bucket: str
+    region: str | None = None
+    prefix: str = ""
+    endpoint_env: str | None = None
+    access_key_env: str | None = None
+    secret_key_env: str | None = None
+    session_token_env: str | None = None
+    region_env: str | None = None
+    encryption_algorithm: Literal["AES256", "aws:kms"] | None = None
+    encryption_key_env: str | None = None
+
+    @field_validator("bucket")
+    @classmethod
+    def bucket_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or any(ord(ch) < 32 for ch in normalized)
+        ):
+            raise ValueError(
+                f"{info.field_name} must be a non-empty S3 bucket name "
+                "without path separators"
+            )
+        return normalized
+
+    @field_validator("prefix")
+    @classmethod
+    def prefix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        from pathlib import PurePosixPath
+
+        normalized = value.strip("/")
+        if "\\" in value or any(ord(ch) < 32 for ch in value):
+            raise ValueError(f"{info.field_name} must be a safe POSIX object-key prefix")
+        if normalized:
+            parts = PurePosixPath(normalized).parts
+            if value.startswith("/") or any(part in {".", ".."} for part in parts):
+                raise ValueError(
+                    f"{info.field_name} must be relative and must not contain "
+                    "'.' or '..' segments"
+                )
+        return normalized
+
+    @field_validator(
+        "endpoint_env",
+        "access_key_env",
+        "secret_key_env",
+        "session_token_env",
+        "region_env",
+        "encryption_key_env",
+    )
+    @classmethod
+    def env_references_must_be_names(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @model_validator(mode="after")
+    def credentials_and_encryption_must_be_complete(self) -> "WalArchiveS3Config":
+        if bool(self.access_key_env) != bool(self.secret_key_env):
+            raise ValueError(
+                "WAL archive access_key_env and secret_key_env must be configured together"
+            )
+        if self.session_token_env and not self.access_key_env:
+            raise ValueError(
+                "WAL archive session_token_env requires access_key_env and secret_key_env"
+            )
+        if self.encryption_key_env and self.encryption_algorithm != "aws:kms":
+            raise ValueError(
+                "WAL archive encryption_key_env requires encryption_algorithm 'aws:kms'"
+            )
+        return self
+
+
+class PitrRetentionConfig(BaseModel):
+    """Retention floor for recoverable physical backups and their WAL graph."""
+
+    base_backups: int = Field(default=2, ge=0)
+    grace_hours: int = Field(default=24, ge=0)
+
+
+class PitrConfig(BaseModel):
+    """PostgreSQL physical backup/PITR settings, disabled unless opted in."""
+
+    enabled: bool = False
+    environment: str = "production"
+    cluster_id: str | None = None
+    system_identifier: str | None = None
+    destination: WalArchiveS3Config | None = None
+    replication_user: str | None = None
+    replication_password_env: str | None = None
+    recovery_image: str | None = None
+    filestore_policy: Literal["database_only"] | None = None
+    retention: PitrRetentionConfig = Field(default_factory=PitrRetentionConfig)
+
+    @field_validator("environment", "cluster_id", "replication_user")
+    @classmethod
+    def identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, f"pitr.{info.field_name}")
+
+    @field_validator("system_identifier")
+    @classmethod
+    def system_identifier_must_be_decimal(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[1-9][0-9]{0,19}", value):
+            raise ValueError(
+                f"{info.field_name} must be a decimal PostgreSQL system identifier"
+            )
+        return value
+
+    @field_validator("replication_password_env")
+    @classmethod
+    def replication_password_must_be_an_env_name(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @field_validator("recovery_image")
+    @classmethod
+    def recovery_image_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > 512
+            or any(ch.isspace() or ord(ch) < 32 for ch in normalized)
+            or not re.fullmatch(
+                r"(?:[^@\s]+@)?sha256:[0-9a-fA-F]{64}",
+                normalized,
+            )
+        ):
+            raise ValueError(
+                f"{info.field_name} must be an immutable sha256 image reference"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def enabled_pitr_must_be_explicit(self) -> "PitrConfig":
+        if not self.enabled:
+            return self
+        if not self.cluster_id:
+            raise ValueError("pitr.cluster_id is required when PITR is enabled")
+        if self.destination is None:
+            raise ValueError("pitr.destination is required when PITR is enabled")
+        if self.system_identifier is None:
+            raise ValueError(
+                "pitr.system_identifier is required when PITR is enabled "
+                "so a fresh recovery host can locate the archive"
+            )
+        if self.recovery_image is None:
+            raise ValueError(
+                "pitr.recovery_image is required when PITR is enabled"
+            )
+        if self.filestore_policy != "database_only":
+            raise ValueError(
+                "pitr.filestore_policy must explicitly be 'database_only' "
+                "when PITR is enabled"
+            )
+        if self.retention.base_backups < 1:
+            raise ValueError(
+                "pitr.retention.base_backups must be at least 1 when PITR is enabled"
+            )
+        return self
+
+
+def _validate_executable(value: str, field_name: str) -> str:
+    if not value or not value.strip() or any(ch.isspace() for ch in value):
+        raise ValueError(f"{field_name} must be one executable path without whitespace")
+    return value
+
+
+class AwsEbsSnapshotConfig(BaseModel):
+    instance_id: str
+    region: str
+    recovery_availability_zone: str = Field(
+        validation_alias=AliasChoices(
+            "recovery_availability_zone",
+            "availability_zone",
+        )
+    )
+    profile: str | None = None
+    include_root_volume: bool = True
+    completion_timeout_seconds: int = Field(default=600, ge=0, le=86400)
+    poll_interval_seconds: float = Field(default=15.0, gt=0, le=300)
+    cli_command: str = "aws"
+
+    @field_validator("instance_id")
+    @classmethod
+    def instance_id_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not re.fullmatch(r"i-[0-9a-fA-F]{8,32}", value):
+            raise ValueError(f"{info.field_name} must be an EC2 instance id")
+        return value
+
+    @field_validator("region", "recovery_availability_zone", "profile")
+    @classmethod
+    def cloud_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value):
+            raise ValueError(f"{info.field_name} contains unsupported characters")
+        return value
+
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_executable(value, info.field_name)
+
+    @model_validator(mode="after")
+    def recovery_zone_must_belong_to_region(self) -> "AwsEbsSnapshotConfig":
+        suffix = self.recovery_availability_zone[len(self.region) :]
+        if (
+            not self.recovery_availability_zone.startswith(self.region)
+            or not suffix
+            or not (suffix[0].isalpha() or suffix[0] == "-")
+        ):
+            raise ValueError(
+                "recovery_availability_zone must belong to the configured AWS region"
+            )
+        return self
+
+
+class HetznerSnapshotConfig(BaseModel):
+    server: str
+    recovery_server_type: str
+    recovery_location: str
+    recovery_network: str
+    context: str | None = None
+    token_env: str = "HCLOUD_TOKEN"
+    completion_timeout_seconds: int = Field(default=600, ge=0, le=86400)
+    poll_interval_seconds: float = Field(default=10.0, gt=0, le=300)
+    cli_command: str = "hcloud"
+
+    @field_validator(
+        "server",
+        "recovery_server_type",
+        "recovery_location",
+        "recovery_network",
+        "context",
+    )
+    @classmethod
+    def resource_identifiers_must_be_safe(
+        cls,
+        value: str | None,
+        info: ValidationInfo,
+    ) -> str | None:
+        if value is None:
+            return value
+        return validate_identifier(value, info.field_name)
+
+    @field_validator("token_env")
+    @classmethod
+    def token_env_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(f"{info.field_name} must be an environment variable name")
+        return value
+
+    @field_validator("cli_command")
+    @classmethod
+    def cli_command_must_be_nonempty(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_executable(value, info.field_name)
+
+
+class SnapshotsConfig(BaseModel):
+    provider: Literal["none", "aws_ebs", "hetzner_cloud"] = "none"
+    environment: str = "production"
+    pre_deploy: Literal["disabled", "preferred", "required"] = "disabled"
+    aws_ebs: AwsEbsSnapshotConfig | None = None
+    hetzner_cloud: HetznerSnapshotConfig | None = None
+
+    @field_validator("environment")
+    @classmethod
+    def environment_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        return validate_identifier(value, info.field_name)
+
+    @model_validator(mode="after")
+    def provider_settings_must_match(self) -> "SnapshotsConfig":
+        if self.provider == "none":
+            if self.pre_deploy != "disabled":
+                raise ValueError(
+                    "snapshots.pre_deploy must be disabled when snapshots.provider is none"
+                )
+            return self
+        if self.provider == "aws_ebs" and self.aws_ebs is None:
+            raise ValueError("snapshots.aws_ebs is required for the aws_ebs provider")
+        if self.provider == "hetzner_cloud" and self.hetzner_cloud is None:
+            raise ValueError(
+                "snapshots.hetzner_cloud is required for the hetzner_cloud provider"
+            )
+        return self
+
+
 class SanitizationConfig(BaseModel):
+    native_neutralize: Literal["required", "preferred", "disabled"] = "preferred"
     sql_files: list[str] = Field(default_factory=list)
     disable_mail_servers: bool = True
     disable_fetchmail: bool = True
@@ -223,6 +908,14 @@ class SanitizationConfig(BaseModel):
     disable_queue_jobs: bool = True
     purge_mail_queue: bool = True
     temp_db_suffix: str = "_incoming"
+
+    @field_validator("temp_db_suffix")
+    @classmethod
+    def temp_db_suffix_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        if not value:
+            raise ValueError(f"{info.field_name} must not be empty")
+        validate_identifier(f"x{value}", info.field_name)
+        return value
 
 
 class RedactionConfig(BaseModel):
@@ -238,16 +931,119 @@ class HealthcheckConfig(BaseModel):
     interval_seconds: int = 5
 
 
+class GitOpsConfig(BaseModel):
+    enabled: bool = False
+    output_path: str = ".odooctl/gitops"
+    preview_base_domain: str | None = None
+    preview_source_environment: str = "staging"
+    preview_ttl_hours: int = Field(default=24, ge=1, le=168)
+    initializer_image: str = "ghcr.io/rami-0/odooctl:latest"
+    preview_image_template: str | None = None
+
+    @field_validator("output_path")
+    @classmethod
+    def output_path_must_be_relative(cls, value: str) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("gitops.output_path must be a project-relative path")
+        return value
+
+    @field_validator("preview_base_domain")
+    @classmethod
+    def preview_domain_must_be_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_hostname(value, "gitops.preview_base_domain")
+
+    @field_validator("preview_source_environment")
+    @classmethod
+    def preview_source_must_be_safe(cls, value: str) -> str:
+        return validate_identifier(value, "gitops.preview_source_environment")
+
+    @field_validator("preview_image_template")
+    @classmethod
+    def preview_image_template_must_be_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        unknown = re.sub(r"\{(?:revision|pull_request)\}", "", value)
+        if "{" in unknown or "}" in unknown:
+            raise ValueError(
+                "gitops.preview_image_template may only use "
+                "{revision} and {pull_request}"
+            )
+        if not value.strip() or len(value) > 512:
+            raise ValueError("gitops.preview_image_template is invalid")
+        return value
+
+
+class LocalSimulationConfig(BaseModel):
+    enabled: bool = False
+    environment: str = "development"
+    output_path: str = ".odooctl/local"
+    cluster_prefix: str = "odooctl"
+    k3s_image: str = "rancher/k3s:v1.31.5-k3s1"
+    http_port: int = Field(default=8069, ge=1024, le=65535)
+    postgres_port: int = Field(default=5432, ge=1024, le=65535)
+    postgres_image: str = "postgres:16"
+    build_context: str = "."
+    dockerfile: str = "Dockerfile"
+    live_update_paths: list[str] = Field(default_factory=lambda: ["addons"])
+    rollout_timeout_seconds: int = Field(default=60, ge=10, le=600)
+
+    @field_validator("environment", "cluster_prefix")
+    @classmethod
+    def identifiers_must_be_safe(cls, value: str, info: ValidationInfo) -> str:
+        return validate_identifier(value, f"local_simulation.{info.field_name}")
+
+    @field_validator("output_path", "build_context", "dockerfile")
+    @classmethod
+    def project_paths_must_be_relative(cls, value: str, info: ValidationInfo) -> str:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(
+                f"local_simulation.{info.field_name} must be project-relative"
+            )
+        return value
+
+    @field_validator("live_update_paths")
+    @classmethod
+    def live_update_paths_must_be_relative(cls, value: list[str]) -> list[str]:
+        for raw in value:
+            path = Path(raw)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(
+                    "local_simulation.live_update_paths must be project-relative"
+                )
+        return value
+
+
 class OdooCtlConfig(BaseModel):
     project: ProjectConfig
-    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    runtime: RuntimeConfig | KubernetesRuntimeConfig = Field(
+        default_factory=RuntimeConfig,
+        discriminator="type",
+    )
     environments: dict[str, EnvironmentConfig]
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     odoo: OdooConfig
     backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    pitr: PitrConfig = Field(default_factory=PitrConfig)
+    snapshots: SnapshotsConfig = Field(default_factory=SnapshotsConfig)
     sanitization: SanitizationConfig = Field(default_factory=SanitizationConfig)
     healthcheck: HealthcheckConfig = Field(default_factory=HealthcheckConfig)
+    gitops: GitOpsConfig = Field(default_factory=GitOpsConfig)
+    local_simulation: LocalSimulationConfig = Field(
+        default_factory=LocalSimulationConfig
+    )
     redaction: RedactionConfig = Field(default_factory=RedactionConfig)
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def legacy_runtime_defaults_to_compose(cls, value: object) -> object:
+        """Keep pre-R7 runtime mappings valid when ``type`` was omitted."""
+        if isinstance(value, dict) and "type" not in value:
+            return {"type": "docker_compose", **value}
+        return value
 
     @field_validator("environments")
     @classmethod
@@ -272,7 +1068,65 @@ class OdooCtlConfig(BaseModel):
         seen_domains: dict[str, str] = {}
         seen_branches: dict[str, str] = {}
 
+        if self.pitr.enabled and self.pitr.environment not in self.environments:
+            known = ", ".join(sorted(self.environments))
+            raise ValueError(
+                f"pitr.environment {self.pitr.environment!r} is not defined. "
+                f"Known: {known}"
+            )
+
+        if (
+            self.snapshots.provider != "none"
+            and self.snapshots.environment not in self.environments
+        ):
+            known = ", ".join(sorted(self.environments))
+            raise ValueError(
+                f"snapshots.environment {self.snapshots.environment!r} is not "
+                f"defined. Known: {known}"
+            )
+        if (
+            self.snapshots.provider != "none"
+            and self.snapshots.pre_deploy != "disabled"
+            and not self.is_protected(self.snapshots.environment)
+        ):
+            raise ValueError(
+                "snapshots.pre_deploy requires snapshots.environment to be a "
+                "protected environment"
+            )
+        if self.gitops.enabled:
+            if self.runtime.type != "kubernetes":
+                raise ValueError("gitops.enabled requires runtime.type: kubernetes")
+            if self.gitops.preview_source_environment not in self.environments:
+                raise ValueError(
+                    "gitops.preview_source_environment "
+                    f"{self.gitops.preview_source_environment!r} is not defined"
+                )
+        if self.local_simulation.enabled:
+            if self.runtime.type != "kubernetes":
+                raise ValueError(
+                    "local_simulation.enabled requires runtime.type: kubernetes"
+                )
+            if self.local_simulation.environment not in self.environments:
+                raise ValueError(
+                    "local_simulation.environment "
+                    f"{self.local_simulation.environment!r} is not defined"
+                )
+
         for name, env in self.environments.items():
+            if self.runtime.type == "docker_compose" and env.rollout_strategy != "recreate":
+                raise ValueError(
+                    f"Environment '{name}' rollout_strategy {env.rollout_strategy!r} "
+                    "is not supported by docker_compose; supported: recreate"
+                )
+            if (
+                self.runtime.type == "kubernetes"
+                and env.rollout_strategy == "canary"
+                and self.runtime.canary_provider != "nginx"
+            ):
+                raise ValueError(
+                    f"Environment '{name}' canary rollout requires "
+                    "runtime.canary_provider: nginx"
+                )
             if name == "production" and env.clone_from:
                 raise ValueError(
                     "Environment 'production' cannot be a clone target; "
@@ -362,27 +1216,96 @@ class OdooCtlConfig(BaseModel):
             known = ", ".join(sorted(self.environments))
             raise KeyError(f"Unknown environment '{name}'. Known: {known}") from exc
 
-    def referenced_env_vars(self) -> list[str]:
+    def referenced_env_vars(
+        self,
+        *,
+        include_snapshot: bool = False,
+    ) -> list[str]:
         refs = {self.postgres.password_env}
         if self.postgres.service_password_env:
             refs.add(self.postgres.service_password_env)
         if self.odoo.db_password_env:
             refs.add(self.odoo.db_password_env)
-        if self.backups.remote:
+        if (
+            self.backups.remote
+            and self.backups.remote.policy != "disabled"
+        ):
             remote = self.backups.remote
             for value in (
                 remote.endpoint_env,
                 remote.access_key_env,
                 remote.secret_key_env,
+                remote.session_token_env,
                 remote.region_env,
                 remote.encryption_key_env,
             ):
                 if value:
                     refs.add(value)
+        if self.pitr.enabled:
+            if self.pitr.replication_password_env:
+                refs.add(self.pitr.replication_password_env)
+            assert self.pitr.destination is not None
+            for value in (
+                self.pitr.destination.endpoint_env,
+                self.pitr.destination.access_key_env,
+                self.pitr.destination.secret_key_env,
+                self.pitr.destination.session_token_env,
+                self.pitr.destination.region_env,
+                self.pitr.destination.encryption_key_env,
+            ):
+                if value:
+                    refs.add(value)
+        for environment in self.environments.values():
+            backend = environment.filestore_backend
+            if backend is None or backend.object_store is None:
+                continue
+            for value in (
+                backend.object_store.endpoint_env,
+                backend.object_store.access_key_env,
+                backend.object_store.secret_key_env,
+                backend.object_store.session_token_env,
+                backend.object_store.region_env,
+                backend.object_store.encryption_key_env,
+            ):
+                if value:
+                    refs.add(value)
+        if (
+            include_snapshot
+            and
+            self.snapshots.provider == "hetzner_cloud"
+            and self.snapshots.hetzner_cloud is not None
+            and not self.snapshots.hetzner_cloud.context
+        ):
+            refs.add(self.snapshots.hetzner_cloud.token_env)
         return sorted(refs)
 
-    def missing_env_vars(self) -> list[str]:
-        return [name for name in self.referenced_env_vars() if not os.getenv(name)]
+    def snapshot_referenced_env_vars(self) -> list[str]:
+        if (
+            self.snapshots.provider == "hetzner_cloud"
+            and self.snapshots.hetzner_cloud is not None
+            and not self.snapshots.hetzner_cloud.context
+        ):
+            return [self.snapshots.hetzner_cloud.token_env]
+        return []
+
+    def missing_env_vars(
+        self,
+        *,
+        include_snapshot: bool = False,
+    ) -> list[str]:
+        return [
+            name
+            for name in self.referenced_env_vars(
+                include_snapshot=include_snapshot,
+            )
+            if not os.getenv(name)
+        ]
+
+    def missing_snapshot_env_vars(self) -> list[str]:
+        return [
+            name for name in self.snapshot_referenced_env_vars()
+            if not os.getenv(name)
+        ]
 
 
 def load_config(path: str | Path = "odooctl.yml") -> OdooCtlConfig:
@@ -411,14 +1334,30 @@ postgres:
 
 backups:
   local_path: backups
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 6
+    grace_hours: 1
   remote:
     type: s3
     bucket: demo-odoo-backups
+    policy: required
+    verify_after_upload: true
+    orphan_grace_hours: 24
     endpoint_env: ODOO_S3_ENDPOINT
     access_key_env: ODOO_S3_ACCESS_KEY
     secret_key_env: ODOO_S3_SECRET_KEY
     region: eu-central-1
     prefix: demo-odoo
+
+pitr:
+  enabled: false
+  environment: production
+
+snapshots:
+  provider: none
+  pre_deploy: disabled
 
 redaction:
   min_secret_length: 6
@@ -429,6 +1368,7 @@ redaction:
 
 odoo:
   image: registry.example.com/odoo:19.0
+  cli_command: odoo
   config_path: /etc/odoo/odoo.conf
   service: odoo
   addons_paths:
@@ -441,6 +1381,8 @@ environments:
     domain: odoo.example.com
     db_name: odoo_prod
     filestore_path: /var/lib/odoo/filestore/odoo_prod
+    filestore_backend:
+      type: local
     update_modules:
       - sale
       - stock
@@ -449,6 +1391,8 @@ environments:
     domain: staging.odoo.example.com
     db_name: odoo_staging
     filestore_path: /var/lib/odoo/filestore/odoo_staging
+    filestore_backend:
+      type: local
     clone_from: production
     sanitize: true
     update_modules:
@@ -457,6 +1401,7 @@ environments:
       - custom_module
 
 sanitization:
+  native_neutralize: preferred
   sql_files:
     - .sanitize/staging.sql
     - .sanitize/disable_connectors.sql

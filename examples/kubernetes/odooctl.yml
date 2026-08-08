@@ -1,0 +1,60 @@
+project:
+  name: acme-erp
+  odoo_version: "19.0"
+
+runtime:
+  type: kubernetes
+  context: production
+  namespace_template: "{project}-{environment}"
+  manifests_path: .odooctl/rendered/kubernetes
+  replicas: 2
+  postgres_mode: external
+  canary_provider: nginx
+  secret_refs:
+    PGPASSWORD:
+      name: odoo-database
+      key: password
+
+gitops:
+  enabled: true
+  output_path: deploy/gitops
+  preview_base_domain: preview.example.com
+  preview_source_environment: staging
+  preview_ttl_hours: 24
+  initializer_image: registry.example.com/acme/odooctl:0.2.0
+  preview_image_template: "registry.example.com/acme/odoo:pr-{revision}"
+
+postgres:
+  host: postgres-rw.database.svc.cluster.local
+  user: odoo
+  password_env: ODOO_DB_PASSWORD
+
+odoo:
+  image: registry.example.com/acme/odoo:19
+  service: odoo
+  db_host: postgres-rw.database.svc.cluster.local
+  db_user: odoo
+  db_password_env: ODOO_DB_PASSWORD
+
+environments:
+  production:
+    tier: production
+    branch: main
+    domain: erp.example.com
+    db_name: acme_production
+    filestore_path: acme_production
+    filestore_volume: odoo-filestore
+    rollout_strategy: blue_green
+    auto_rollback: true
+  staging:
+    tier: staging
+    branch: staging
+    domain: staging.example.com
+    db_name: acme_staging
+    filestore_path: acme_staging
+    filestore_volume: odoo-staging-filestore
+    clone_from: production
+    sanitize: true
+    rollout_strategy: canary
+    canary_percent: 10
+    auto_rollback: true

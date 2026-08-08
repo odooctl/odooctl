@@ -5,12 +5,25 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://github.com/odooctl/odooctl/blob/master/pyproject.toml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-`odooctl` is a CLI-first, Odoo-aware control plane for self-hosted Odoo on Docker Compose — think open-source Odoo.sh for your own server. It handles the operational lifecycle generic deploy tools miss: verified backups, sanitized staging clones, module updates, rollback, environment promotion, upgrade rehearsal, and health checks, all Odoo- and PostgreSQL-aware. It runs against the compose stack you already have; you keep your server, your data, and your compose files.
+`odooctl` is a CLI-first, Odoo-aware control plane for self-hosted Odoo on
+Docker Compose or Kubernetes — think open-source Odoo.sh for your own
+infrastructure. It handles the operational lifecycle generic deploy tools miss:
+verified backups, sanitized staging clones, module updates, rollback,
+environment promotion, upgrade rehearsal, and health checks, all Odoo- and
+PostgreSQL-aware. Existing Compose projects remain the zero-migration default.
 
 ## Why odooctl
 
 - **Safety by default.** Deploys to protected environments take a database + filestore backup first; failed module updates and failed health checks stop the deployment with a non-zero exit.
 - **Verify before destroy.** Restores land in a temporary database and are only swapped into place after the restore succeeds — a bad backup never destroys a working environment.
+- **Off-host backup policy is explicit.** S3 copies can be `required`,
+  `best_effort`, or `disabled`, with byte verification, project-scoped object
+  namespaces, and retention that never treats an unknown old upload as safe to
+  delete.
+- **Filestore migrations verify every byte.** Local paths and Docker volumes
+  can migrate to a POSIX object mount or a project-scoped S3-compatible
+  generation; cutover is explicit and source deletion is a separate,
+  fully-confirmed operation.
 - **Staging clones you can trust.** `odooctl clone production staging` sanitizes by default: mail servers, crons, payment providers, queue jobs, OAuth secrets, IAP tokens, and webhook URLs are neutralized — including wiping Odoo 19 WebAuthn passkeys — so staging cannot email customers or charge cards.
 - **Adopt what you already run.** `odooctl import` detects an existing compose deployment read-only, previews the generated config, and only writes on `--yes` — then registers the project, runs preflight checks, and takes a safety backup.
 - **Protected environments.** Production-tier environments require elevated confirmation for destructive operations, in the CLI, API, and web UI alike.
@@ -68,18 +81,30 @@ odooctl status
 | --- | --- | --- |
 | Import / takeover of existing stacks | `odooctl import` | [docs/getting-started.md](docs/getting-started.md) |
 | Deploy with pre-deploy backups | `odooctl deploy` | [docs/deployment.md](docs/deployment.md) |
-| Verified backups, safe restores | `odooctl backup --verify`, `odooctl restore` | [docs/backup-restore.md](docs/backup-restore.md) |
+| Verified local/remote backups, safe restores | `odooctl backup --verify`, `odooctl backup-remote`, `odooctl restore` | [docs/backup-restore.md](docs/backup-restore.md) |
 | Sanitized staging clones | `odooctl clone`, `odooctl env create` | [docs/staging-clone.md](docs/staging-clone.md), [docs/environments.md](docs/environments.md) |
 | Rollback (code or full) | `odooctl rollback` | [docs/rollback.md](docs/rollback.md) |
 | Environment promotion | `odooctl promote` | [docs/environments.md](docs/environments.md) |
 | Preflight checks | `odooctl doctor` | [docs/doctor.md](docs/doctor.md) |
 | Upgrade rehearsal (17 → 18 → 19) | `odooctl migrate matrix / scan / rehearse` | [docs/migration.md](docs/migration.md) |
-| Disaster-recovery drills | `odooctl dr drill` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
+| Disaster recovery and provider snapshots | `odooctl dr drill`, `odooctl dr snapshot` | [docs/disaster-recovery.md](docs/disaster-recovery.md) |
+| PostgreSQL WAL archiving and PITR | `odooctl pitr` | [docs/pitr.md](docs/pitr.md) |
+| Object-storage filestore migration | `odooctl filestore` | [docs/filestore-storage.md](docs/filestore-storage.md) |
+| Kubernetes runtime and production manifests | `odooctl deploy`, `odooctl logs`, `odooctl status` | [docs/kubernetes.md](docs/kubernetes.md) |
+| GitOps and expiring PR environments | `odooctl gitops` | [docs/gitops.md](docs/gitops.md) |
+| Progressive rollout and automated rollback | `odooctl deploy`, `odooctl promote` | [docs/progressive-deployment.md](docs/progressive-deployment.md) |
+| k3d + Tilt production simulation | `odooctl local` | [docs/local-simulation.md](docs/local-simulation.md) |
 | Domains / SSL via reverse proxy | `odooctl domain` | [docs/domains-ssl.md](docs/domains-ssl.md) |
 | Local REST API + operation queue | `odooctl serve`, `odooctl runner`, `odooctl ops` | [docs/api.md](docs/api.md) |
 | RBAC, tokens, secret store | `odooctl security` | [docs/rbac.md](docs/rbac.md) |
 | Stack / addon catalog | `odooctl catalog`, `odooctl setup` | [docs/catalog.md](docs/catalog.md) |
-| Scheduled backups / checks | `odooctl schedule` | [docs/getting-started.md](docs/getting-started.md) |
+| Scheduled backups / checks / DR drills | `odooctl schedule` | [docs/backup-restore.md#scheduling-backups-verification-and-drills](docs/backup-restore.md#scheduling-backups-verification-and-drills) |
+
+Provider snapshots are deliberately coarse DR artifacts: one provider source is
+bound to one environment, recovery is plan-only by default, and execution
+creates isolated resources only after exact snapshot/source confirmation. They
+supplement rather than replace portable database + filestore backups; see the
+[lifecycle and cost notes](docs/disaster-recovery.md#provider-snapshots).
 
 ## Web UI
 
@@ -124,17 +149,29 @@ The host also needs Docker Engine with the Compose plugin and `tar`. With the re
 ## Development
 
 ```bash
-uv venv
-uv pip install -e '.[dev]'
-pytest -q                              # unit suite
-pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker)
+uv sync --frozen --extra dev --extra api           # exactly what CI installs
+uv run --frozen pytest -q                          # unit suite
+uv run --frozen ruff check odooctl tests           # lint
+uv run --frozen pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker)
 ```
+
+`uv.lock` is authoritative — `--frozen` keeps your environment identical to
+CI's. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing dependencies.
 
 ## Safety defaults
 
 - Deploys to protected environments create database and filestore backups first.
 - Module-update and health-check failures fail the deployment with a non-zero exit.
 - Restores go into a temporary database and are swapped in only after success.
+- DR drills restore into disposable PostgreSQL and Odoo containers on an
+  internal network with dedicated volumes; live services and data volumes are
+  never restore targets.
+- PITR restores into an isolated PostgreSQL runtime and a new verified database
+  before an explicit, OID-fenced cutover. WAL recovery is database-only and
+  never claims to rewind the Odoo filestore.
+- Filestore migration cutover re-verifies both the target and unchanged source;
+  source deletion is a separate operation requiring exact environment and
+  migration confirmations.
 - Clone sanitization is on by default and disables mail, fetchmail, crons, payment providers, queue jobs, and automation rules; scrubs OAuth/IAP/webhook credentials; deletes Odoo 19 passkeys; and rewrites and freezes `web.base.url`.
 - Secrets are referenced via environment variables (`password_env`) and redacted from logs, errors, and operation events; never commit secret values.
 - The API/runner split is structurally enforced: `odooctl security runner-check` verifies the API layer imports no privileged adapters.

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.context import ProjectContext
 
 
-def _compose_adapter(compose_file: str, project_root: Path):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
-        return DockerComposeAdapter(compose_file, project_dir=str(project_root))
+        return make_runtime_adapter(
+            context,
+            environment=environment,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
     except TypeError:
-        return DockerComposeAdapter(compose_file)
+        return DockerComposeAdapter(context.config.runtime.compose_file)
 
 
 def execute(
@@ -24,4 +27,8 @@ def execute(
     context = ProjectContext.from_config_path(config_path)
     cfg = context.config
     cfg.env(environment)
-    _compose_adapter(cfg.runtime.compose_file, context.root).logs(service or cfg.odoo.service, follow=follow, tail=tail)
+    _runtime_adapter(context, environment).logs(
+        service or cfg.odoo.service,
+        follow=follow,
+        tail=tail,
+    )

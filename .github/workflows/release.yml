@@ -5,26 +5,34 @@ on:
     tags:
       - 'v*'
 
+env:
+  # Keep in sync with .github/workflows/ci.yml so releases are built by the
+  # same resolver that validated the commit.
+  UV_VERSION: '0.12.3'
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
+          enable-cache: true
+      - name: Install locked environment
+        run: uv sync --frozen --extra dev --extra api
       - name: Run tests
-        run: |
-          pip install -e '.[dev,api]'
-          pytest -q
+        run: uv run --frozen pytest -q
       - name: Build
-        run: |
-          pip install build
-          python -m build
+        run: uv run --frozen python -m build
+      # Deliberately unlocked: verifies the artifact we are about to publish
+      # installs cleanly from live PyPI, exactly as a user would get it.
       - name: Smoke-install wheel
         run: |
-          pip install dist/*.whl
-          odooctl --version
+          uv venv /tmp/smoke
+          VIRTUAL_ENV=/tmp/smoke uv pip install dist/*.whl
+          /tmp/smoke/bin/odooctl --version
       - uses: actions/upload-artifact@v7
         with:
           name: dist

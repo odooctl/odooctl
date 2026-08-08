@@ -59,9 +59,26 @@ def test_clone_production_to_staging_sanitizes(odoo_stack):
 
     mail = odoo_stack.psql(
         "odoo_staging",
+        "SELECT count(*) FROM ir_mail_server "
+        "WHERE active AND name = 'neutralization - disable emails' "
+        "AND smtp_host = 'invalid'",
+    )
+    assert mail == "1"
+    active_mail = odoo_stack.psql(
+        "odoo_staging",
         "SELECT count(*) FROM ir_mail_server WHERE active",
     )
-    assert mail == "0"
+    assert active_mail == "1"
+    neutralized = odoo_stack.psql(
+        "odoo_staging",
+        "SELECT value FROM ir_config_parameter WHERE key = 'database.is_neutralized'",
+    )
+    assert neutralized.lower() == "true"
+    metadata = json.loads(
+        (odoo_stack.root / ".odooctl" / "sanitizations" / "staging-latest.json").read_text()
+    )
+    assert metadata["native_status"] == "executed"
+    assert metadata["verified"] is True
 
 
 def test_restore_production_backup_into_staging(odoo_stack):

@@ -44,6 +44,24 @@ def test_restore_points_returns_sorted_descending(tmp_path):
     assert points[1].backup_id == "production_2026-05-30_100000"
 
 
+def test_restore_points_sort_by_manifest_time_with_random_id_suffixes(tmp_path):
+    from odooctl.services.restore_points import list_restore_points
+
+    root = tmp_path / "backups"
+    root.mkdir()
+    older = _make_backup_dir(root, "production", "2026-05-30_100000")
+    newer = _make_backup_dir(root, "production", "2026-05-31_100000")
+    older.rename(root / f"{older.name}_ffffffffffff")
+    newer.rename(root / f"{newer.name}_000000000000")
+
+    points = list_restore_points(root)
+
+    assert [point.timestamp for point in points] == [
+        "2026-05-31_100000",
+        "2026-05-30_100000",
+    ]
+
+
 def test_restore_points_filters_by_environment(tmp_path):
     from odooctl.services.restore_points import list_restore_points
 

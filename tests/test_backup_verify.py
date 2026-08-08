@@ -21,6 +21,8 @@ postgres:
   password_env: ODOO_DB_PASSWORD
 odoo:
   image: odoo:19.0
+sanitization:
+  native_neutralize: disabled
 environments:
   production:
     branch: main
@@ -58,6 +60,17 @@ def _make_valid_backup(backups_root: Path, environment: str, project: str = "bv-
     }
     (d / "manifest.json").write_text(json.dumps(manifest))
     return backup_id
+
+
+def _neutralization_result():
+    return SimpleNamespace(
+        policy="disabled",
+        native_status="disabled",
+        profile="normal",
+        extension_statements=1,
+        custom_sql_files=0,
+        verification_checks=("database marked neutralized",),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +410,8 @@ postgres:
   password_env: ODOO_DB_PASSWORD
 odoo:
   image: odoo:19.0
+sanitization:
+  native_neutralize: disabled
 environments:
   production:
     branch: main
@@ -443,7 +458,7 @@ environments:
 
 
 def test_restore_to_env_sanitizes_temp_db_for_production_source(tmp_path):
-    """production→staging restore must call sanitize_database on the temp DB."""
+    """production→staging restore must neutralize the temp DB."""
     from odooctl.services.restore import restore_to_env
     from odooctl.services.context import ServiceContext
 
@@ -457,8 +472,14 @@ def test_restore_to_env_sanitizes_temp_db_for_production_source(tmp_path):
 
     sanitize_calls = []
 
-    with patch("odooctl.services.restore.sanitize_database",
-               side_effect=lambda pg, db, env, cfg, **kw: sanitize_calls.append(db)), \
+    def record_neutralization(**kwargs):
+        sanitize_calls.append(kwargs["db_name"])
+        return _neutralization_result()
+
+    with patch(
+        "odooctl.services.restore.neutralize_database",
+        side_effect=record_neutralization,
+    ), \
          patch("odooctl.services.restore.PostgresAdapter", return_value=MagicMock()), \
          patch("odooctl.services.restore.FilestoreAdapter", return_value=MagicMock()), \
          patch("odooctl.services.restore.check_url"):
@@ -469,12 +490,12 @@ def test_restore_to_env_sanitizes_temp_db_for_production_source(tmp_path):
             ctx=ctx,
         )
 
-    assert sanitize_calls, "sanitize_database must be called for production→staging restore"
+    assert sanitize_calls, "neutralize_database must be called for production→staging restore"
     assert sanitize_calls[0] == "odoo_staging_incoming"
 
 
 def test_restore_to_env_sanitizes_before_swap(tmp_path):
-    """sanitize_database must run on the temp DB BEFORE swap_temp_database."""
+    """neutralize_database must run on the temp DB BEFORE swap_temp_database."""
     from odooctl.services.restore import restore_to_env
     from odooctl.services.context import ServiceContext
 
@@ -491,8 +512,14 @@ def test_restore_to_env_sanitizes_before_swap(tmp_path):
     mock_pg = MagicMock()
     mock_pg.psql.side_effect = lambda *a, **kw: call_order.append("psql")
 
-    with patch("odooctl.services.restore.sanitize_database",
-               side_effect=lambda *a, **kw: call_order.append("sanitize")), \
+    def record_neutralization(**kwargs):
+        call_order.append("sanitize")
+        return _neutralization_result()
+
+    with patch(
+        "odooctl.services.restore.neutralize_database",
+        side_effect=record_neutralization,
+    ), \
          patch("odooctl.services.restore.PostgresAdapter", return_value=mock_pg), \
          patch("odooctl.services.restore.FilestoreAdapter", return_value=MagicMock()), \
          patch("odooctl.services.restore.check_url",
@@ -555,7 +582,7 @@ def test_restore_to_env_refuses_before_any_restore_for_unsanitized_production(tm
 
 
 def test_restore_to_env_does_not_sanitize_for_non_protected_source(tmp_path):
-    """staging→qa restore (non-protected source) must NOT call sanitize_database."""
+    """staging→qa restore (non-protected source) must not neutralize."""
     from odooctl.services.restore import restore_to_env
     from odooctl.services.context import ServiceContext
 
@@ -569,8 +596,10 @@ def test_restore_to_env_does_not_sanitize_for_non_protected_source(tmp_path):
 
     sanitize_calls = []
 
-    with patch("odooctl.services.restore.sanitize_database",
-               side_effect=lambda *a, **kw: sanitize_calls.append(True)), \
+    with patch(
+        "odooctl.services.restore.neutralize_database",
+        side_effect=lambda **kwargs: sanitize_calls.append(True),
+    ), \
          patch("odooctl.services.restore.PostgresAdapter", return_value=MagicMock()), \
          patch("odooctl.services.restore.FilestoreAdapter", return_value=MagicMock()), \
          patch("odooctl.services.restore.check_url"):
@@ -581,4 +610,4 @@ def test_restore_to_env_does_not_sanitize_for_non_protected_source(tmp_path):
             ctx=ctx,
         )
 
-    assert not sanitize_calls, "sanitize_database must NOT be called for non-protected source"
+    assert not sanitize_calls, "neutralize_database must not be called for non-protected source"

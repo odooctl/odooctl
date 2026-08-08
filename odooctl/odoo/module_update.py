@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 
-from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import RuntimeAdapter
 from odooctl.utils.shell import join_csv, run
 
 
@@ -9,11 +9,12 @@ def build_update_modules_args(
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     config_path: str | None = None,
 ) -> list[str]:
-    args = ["odoo", "-d", db_name, "-u", join_csv(modules), "--stop-after-init"]
+    args = [cli_command, "-d", db_name, "-u", join_csv(modules), "--stop-after-init"]
     if config_path:
         args.extend(["-c", config_path])
     if db_host:
@@ -42,6 +43,7 @@ def update_modules_local(
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     db_password_env: str | None = None,
@@ -54,6 +56,7 @@ def update_modules_local(
         build_update_modules_args(
             db_name,
             modules,
+            cli_command=cli_command,
             db_host=db_host,
             db_user=db_user,
             config_path=config_path,
@@ -63,12 +66,13 @@ def update_modules_local(
     )
 
 
-def update_modules_compose(
-    compose: DockerComposeAdapter,
+def update_modules_runtime(
+    runtime: RuntimeAdapter,
     service: str,
     db_name: str,
     modules: list[str],
     *,
+    cli_command: str = "odoo",
     db_host: str | None = None,
     db_user: str | None = None,
     db_password_env: str | None = None,
@@ -77,11 +81,12 @@ def update_modules_compose(
     if not modules:
         return
     extra_env = _resolve_password_env(db_password_env)
-    compose.exec(
+    runtime.exec(
         service,
         build_update_modules_args(
             db_name,
             modules,
+            cli_command=cli_command,
             db_host=db_host,
             db_user=db_user,
             config_path=config_path,
@@ -89,3 +94,7 @@ def update_modules_compose(
         stream=True,
         extra_env=extra_env,
     )
+
+
+# Compatibility alias for integrations importing the pre-R6 helper.
+update_modules_compose = update_modules_runtime

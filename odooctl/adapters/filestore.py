@@ -1,10 +1,12 @@
 from __future__ import annotations
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Protocol
 
 from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.config import EnvironmentConfig, OdooCtlConfig
 from odooctl.context import ProjectContext
 from odooctl.utils.paths import ensure_dir
@@ -39,14 +41,47 @@ def _validate_tar_members(archive: Path) -> None:
         raise RuntimeError(f"Could not read filestore archive {archive}: {exc}") from exc
 
 
+def _archive_root_name(archive: Path) -> str:
+    """Return the archive's single top-level member after safety validation."""
+    import tarfile
+    from pathlib import PurePosixPath
+
+    roots: set[str] = set()
+    try:
+        with tarfile.open(archive, "r:*") as tf:
+            for member in tf.getmembers():
+                parts = tuple(part for part in PurePosixPath(member.name).parts if part != ".")
+                if parts:
+                    roots.add(parts[0])
+    except tarfile.TarError as exc:
+        raise RuntimeError(f"Could not read filestore archive {archive}: {exc}") from exc
+    if len(roots) != 1:
+        raise RuntimeError(
+            "Filestore archive must contain exactly one top-level directory; "
+            f"found: {', '.join(sorted(roots)) or 'none'}"
+        )
+    return next(iter(roots))
+
+
 class FilestoreBackend(Protocol):
     def archive(self, filestore_path: str, output: str | Path) -> None: ...
     def restore_archive(self, archive_path: str | Path, target_path: str) -> None: ...
     def copy(self, source: str, target: str) -> None: ...
     def delete(self, filestore_path: str) -> None: ...
+    def exists(self, filestore_path: str) -> bool: ...
 
 
 class FilestoreAdapter:
+    def exists(self, filestore_path: str) -> bool:
+        path = Path(filestore_path)
+        if not os.path.lexists(path):
+            return False
+        if path.is_symlink() or not path.is_dir():
+            raise RuntimeError(
+                f"Filestore path is not a real directory: {filestore_path}"
+            )
+        return True
+
     def archive(self, filestore_path: str, output: str | Path) -> None:
         source = Path(filestore_path)
         if not source.exists():
@@ -94,16 +129,25 @@ class FilestoreAdapter:
             shutil.rmtree(path)
 
 
-class DockerVolumeFilestore:
-    """Filestore backend for Odoo filestores stored in a Docker named volume.
+class RuntimeVolumeFilestore:
+    """Filestore backend for Odoo filestores stored in a runtime volume.
 
     Odoo's official image stores filestores below ``/var/lib/odoo/filestore``.
-    Archive/restore stream tar bytes through ``docker compose exec -T`` so hosts do
-    not need a bind-mounted filestore path.
+    Archive/restore streams tar bytes through the configured runtime so hosts
+    do not need a bind-mounted filestore path.
     """
 
-    def __init__(self, context: ProjectContext, cfg: OdooCtlConfig):
-        self.compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(context.root))
+    def __init__(
+        self,
+        context: ProjectContext,
+        cfg: OdooCtlConfig,
+        environment: str | None = None,
+    ):
+        self.compose = make_runtime_adapter(
+            context,
+            environment=environment,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
         self.service = cfg.odoo.service
         self.root = cfg.odoo.filestore_container_path.rstrip("/")
 
@@ -123,15 +167,46 @@ class DockerVolumeFilestore:
         )
 
     def restore_archive(self, archive_path: str | Path, target_path: str) -> None:
+        archive = Path(archive_path)
+        if not archive.exists():
+            raise FileNotFoundError(f"Filestore archive does not exist: {archive_path}")
+        _validate_tar_members(archive)
+        archive_root = _archive_root_name(archive)
         name = self._relative_name(target_path)
         parent = f"{self.root}/filestore"
+        stage = f"{parent}/.odooctl-restore-{name}"
         self.compose.exec(self.service, ["mkdir", "-p", parent], stream=True)
-        self.compose.exec(self.service, ["rm", "-rf", f"{parent}/{name}"], stream=True)
-        self.compose.exec_pipe_stdin(
-            self.service,
-            ["tar", "-xf", "-", "-C", parent],
-            stdin_path=archive_path,
-        )
+        self.compose.exec(self.service, ["rm", "-rf", stage], stream=True)
+        self.compose.exec(self.service, ["mkdir", "-p", stage], stream=True)
+        try:
+            self.compose.exec_pipe_stdin(
+                self.service,
+                [
+                    "tar",
+                    "--no-same-owner",
+                    "--no-same-permissions",
+                    "-xf",
+                    "-",
+                    "-C",
+                    stage,
+                ],
+                stdin_path=archive,
+            )
+            # Extract into a private directory first. The archive carries the
+            # source DB's top-level name, which must never be written directly
+            # into the live filestore root during a cross-name restore/drill.
+            self.compose.exec(
+                self.service,
+                ["rm", "-rf", f"{parent}/{name}"],
+                stream=True,
+            )
+            self.compose.exec(
+                self.service,
+                ["mv", f"{stage}/{archive_root}", f"{parent}/{name}"],
+                stream=True,
+            )
+        finally:
+            self.compose.exec(self.service, ["rm", "-rf", stage], stream=True)
 
     def copy(self, source: str, target: str) -> None:
         src = self._container_filestore_dir(source)
@@ -144,8 +219,29 @@ class DockerVolumeFilestore:
         target = self._container_filestore_dir(filestore_path)
         self.compose.exec(self.service, ["rm", "-rf", target], stream=True)
 
+    def exists(self, filestore_path: str) -> bool:
+        target = self._container_filestore_dir(filestore_path)
+        result = self.compose.exec(
+            self.service,
+            ["test", "-d", target],
+            stream=False,
+            check=False,
+        )
+        return result.returncode == 0
+
+
+DockerVolumeFilestore = RuntimeVolumeFilestore
+
 
 def make_filestore_adapter(context: ProjectContext, env: EnvironmentConfig) -> FilestoreBackend:
     if env.filestore_volume:
-        return DockerVolumeFilestore(context, context.config)
+        environment = next(
+            (
+                name
+                for name, candidate in context.config.environments.items()
+                if candidate is env or candidate == env
+            ),
+            None,
+        )
+        return RuntimeVolumeFilestore(context, context.config, environment)
     return FilestoreAdapter()

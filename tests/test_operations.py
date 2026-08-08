@@ -57,6 +57,14 @@ def test_operation_kind_values():
     assert OperationKind.UPDATE_MODULES.value == "update_modules"
     assert OperationKind.ROLLBACK.value == "rollback"
     assert OperationKind.DR_DRILL.value == "dr_drill"
+    assert OperationKind.SNAPSHOT_CREATE.value == "snapshot_create"
+    assert OperationKind.SNAPSHOT_RECONCILE.value == "snapshot_reconcile"
+    assert OperationKind.SNAPSHOT_RESTORE.value == "snapshot_restore"
+    assert OperationKind.PITR_BASE_CREATE.value == "pitr_base_create"
+    assert OperationKind.PITR_RESTORE.value == "pitr_restore"
+    assert OperationKind.PITR_CUTOVER.value == "pitr_cutover"
+    assert OperationKind.PITR_RECONCILE.value == "pitr_reconcile"
+    assert OperationKind.FILESTORE_MIGRATE.value == "filestore_migrate"
 
 
 def test_operation_status_values():
@@ -709,6 +717,36 @@ def test_backup_command_creates_operation_record(tmp_path, monkeypatch):
     assert ops[0].kind.value == "backup"
     assert ops[0].environment == "production"
     assert ops[0].status.value == "succeeded"
+
+
+def test_backup_command_fails_operation_when_verification_fails(tmp_path, monkeypatch):
+    from odooctl.commands import backup as backup_cmd
+    from odooctl.operations.store import OperationStore
+    from odooctl.services import backup as backup_svc
+    from odooctl.services.models import BackupResult
+
+    config = tmp_path / "odooctl.yml"
+    config.write_text(MINIMAL_CONFIG)
+    monkeypatch.setattr(
+        backup_cmd,
+        "run_backup",
+        lambda ctx, environment: BackupResult(backup_id="production_test"),
+    )
+    monkeypatch.setattr(
+        backup_svc,
+        "verify_backup",
+        lambda *args, **kwargs: backup_svc.BackupVerifyResult(
+            ok=False,
+            backup_id="production_test",
+            error="checksum mismatch",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        backup_cmd.execute("production", str(config), verify=True)
+
+    [operation] = OperationStore(tmp_path / ".odooctl").list_all()
+    assert operation.status.value == "failed"
 
 
 def test_deploy_command_creates_operation_record_on_failure(tmp_path, monkeypatch):

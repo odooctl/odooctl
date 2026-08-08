@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from odooctl.adapters.docker_compose import DockerComposeAdapter
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.context import ProjectContext
 from odooctl.odoo.module_update import update_modules_compose
 from odooctl.operations.audit import AuditStore
@@ -11,11 +10,15 @@ from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
 
 
-def _compose_adapter(compose_file: str, project_root: Path):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
-        return DockerComposeAdapter(compose_file, project_dir=str(project_root))
+        return make_runtime_adapter(
+            context,
+            environment=environment,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
     except TypeError:
-        return DockerComposeAdapter(compose_file)
+        return DockerComposeAdapter(context.config.runtime.compose_file)
 
 
 def execute(environment: str, modules: list[str] | None = None, config_path: str = "odooctl.yml") -> None:
@@ -36,12 +39,13 @@ def execute(environment: str, modules: list[str] | None = None, config_path: str
         state_dir=context.state_dir,
     ) as op_ctx:
         op_ctx.emit(f"updating modules: {selected}", phase="update")
-        compose = _compose_adapter(cfg.runtime.compose_file, context.root)
+        compose = _runtime_adapter(context, environment)
         update_modules_compose(
             compose,
             cfg.odoo.service,
             env.db_name,
             selected,
+            cli_command=cfg.odoo.cli_command,
             db_host=cfg.odoo.db_host,
             db_user=cfg.odoo.db_user,
             db_password_env=cfg.odoo.db_password_env,

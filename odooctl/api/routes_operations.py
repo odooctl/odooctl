@@ -14,6 +14,8 @@ No privileged imports — satisfies the runner contract.
 from __future__ import annotations
 
 import asyncio
+import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -37,8 +39,116 @@ _KIND_ACTION: dict[str, Action] = {
     "update_modules": Action.DEPLOY,
     "rollback": Action.RESTORE,
     "dr_drill": Action.RESTORE,
+    "snapshot_create": Action.BACKUP,
+    "snapshot_reconcile": Action.BACKUP,
+    "snapshot_restore": Action.RESTORE,
+    "pitr_base_create": Action.BACKUP,
+    "pitr_restore": Action.RESTORE,
+    "pitr_cutover": Action.RESTORE,
+    "pitr_reconcile": Action.BACKUP,
+    "filestore_migrate": Action.RESTORE,
     "migrate_rehearsal": Action.RESTORE,
 }
+
+_SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _require_safe_operation_id(
+    params: dict[str, Any],
+    name: str,
+) -> str:
+    value = params.get(name)
+    if (
+        not isinstance(value, str)
+        or value in {".", ".."}
+        or not _SAFE_OPERATION_ID.fullmatch(value)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be one safe operation identifier",
+        )
+    return value
+
+
+_FILESTORE_ACTIONS = {
+    "plan",
+    "sync",
+    "verify",
+    "cutover",
+    "download",
+    "delete_source",
+    "delete_remote_marker",
+}
+
+
+def _validate_filestore_params(
+    environment: str,
+    params: dict[str, Any],
+) -> None:
+    action = params.get("action")
+    if action not in _FILESTORE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="filestore_migrate requires a supported action",
+        )
+    if action == "plan":
+        return
+    migration_id = _require_safe_operation_id(params, "migration_id")
+    if action == "cutover" and (
+        params.get("confirm_environment") != environment
+        or params.get("confirm_source_retained") is not True
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "filestore cutover requires the exact environment and "
+                "confirm_source_retained=true"
+            ),
+        )
+    if action == "download":
+        destination = params.get("destination")
+        if not isinstance(destination, str) or not destination.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="filestore download requires a destination",
+            )
+        destination_path = PurePosixPath(destination)
+        if (
+            destination_path.is_absolute()
+            or ".." in destination_path.parts
+            or "\\" in destination
+            or any(ord(character) < 32 for character in destination)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "queued filestore download destination must be a safe "
+                    "project-relative path"
+                ),
+            )
+    if action == "delete_source" and (
+        params.get("confirm_environment") != environment
+        or params.get("confirm_migration_id") != migration_id
+        or params.get("delete_source") is not True
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "filestore source deletion requires exact environment/"
+                "migration confirmations and delete_source=true"
+            ),
+        )
+    if (
+        action == "delete_remote_marker"
+        and params.get("confirm_migration_id") != migration_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "filestore remote marker deletion requires exact migration "
+                "confirmation"
+            ),
+        )
 
 
 class OperationRequest(BaseModel):
@@ -122,12 +232,92 @@ def enqueue_operation(
     enforce_project_scope(request, project)
     ctx = _load_ctx(request, project)
 
+    if (
+        body.kind
+        in {"snapshot_create", "snapshot_reconcile", "snapshot_restore"}
+        and ctx.config.snapshots.provider != "none"
+        and body.environment != ctx.config.snapshots.environment
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Snapshot provider is bound to environment "
+                f"{ctx.config.snapshots.environment!r}, not "
+                f"{body.environment!r}"
+            ),
+        )
+
+    if body.kind.startswith("pitr_"):
+        pitr = ctx.config.pitr
+        if not pitr.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="PITR is disabled for this project",
+            )
+        if body.environment != pitr.environment:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "PITR is bound to environment "
+                    f"{pitr.environment!r}, not {body.environment!r}"
+                ),
+            )
+        if body.kind == "pitr_restore":
+            _require_safe_operation_id(body.params, "plan_id")
+        elif body.kind == "pitr_cutover":
+            _require_safe_operation_id(body.params, "restore_id")
+            expected_database = ctx.config.env(
+                body.environment
+            ).db_name
+            if (
+                body.params.get("confirm_environment")
+                != body.environment
+                or body.params.get("confirm_database")
+                != expected_database
+                or body.params.get("accept_database_only") is not True
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "PITR cutover requires exact environment/database "
+                        "confirmations and accept_database_only=true"
+                    ),
+                )
+
     # Resolve the target environment before authorization so protected-env
     # policy is applied to the actual enqueue target.
     try:
+        environment_config = ctx.config.env(body.environment)
         protected = ctx.config.is_protected(body.environment)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if body.kind == "filestore_migrate":
+        _validate_filestore_params(body.environment, body.params)
+        backend = environment_config.filestore_backend
+        if backend is None or backend.type not in {
+            "object_mirror",
+            "posix_object_mount",
+            "odoo_module",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "filestore migration requires an explicit object_mirror, "
+                    "posix_object_mount, or odoo_module backend"
+                ),
+            )
+        if (
+            body.params.get("action") == "delete_source"
+            and backend.type == "object_mirror"
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "object_mirror is not an Odoo serving backend and "
+                    "cannot authorize source deletion"
+                ),
+            )
 
     # RBAC check for the specific operation kind
     action = _KIND_ACTION.get(body.kind)

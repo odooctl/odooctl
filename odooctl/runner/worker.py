@@ -13,6 +13,7 @@ The runner:
 This module is privileged — it imports ``odooctl.adapters`` / ``odooctl.odoo``
 transitively via the service layer. It must never be imported by odooctl.api.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -38,12 +39,18 @@ from odooctl.security import rbac, tokens
 from odooctl.security.principals import Principal, PrincipalKind, Role
 from odooctl.security.tokens import TokenError
 from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
-from odooctl.adapters.filestore import FilestoreAdapter
+from odooctl.adapters.dr_runtime import DockerComposeDrillRuntime
+from odooctl.adapters.runtime import make_runtime_adapter
 from odooctl.migration.rehearse import rehearse_upgrade, UpgradeResult
 from odooctl.services.backup import run_backup
 from odooctl.services.clone import run_clone
 from odooctl.services.context import ServiceContext
 from odooctl.services.dr import run_dr_drill
+from odooctl.services.snapshots import (
+    run_snapshot_create,
+    run_snapshot_reconcile,
+    run_snapshot_restore,
+)
 from odooctl.utils.shell import redact
 
 if TYPE_CHECKING:
@@ -61,6 +68,14 @@ _KIND_ACTION: dict[str, rbac.Action] = {
     "update_modules": rbac.Action.DEPLOY,
     "rollback": rbac.Action.RESTORE,
     "dr_drill": rbac.Action.RESTORE,
+    "snapshot_create": rbac.Action.BACKUP,
+    "snapshot_reconcile": rbac.Action.BACKUP,
+    "snapshot_restore": rbac.Action.RESTORE,
+    "pitr_base_create": rbac.Action.BACKUP,
+    "pitr_restore": rbac.Action.RESTORE,
+    "pitr_cutover": rbac.Action.RESTORE,
+    "pitr_reconcile": rbac.Action.BACKUP,
+    "filestore_migrate": rbac.Action.RESTORE,
     "migrate_rehearsal": rbac.Action.RESTORE,
 }
 
@@ -231,7 +246,9 @@ class RunnerWorker:
                 project=entry.project,
             )
         except TokenError as exc:
-            store.update_status(entry.op_id, OperationStatus.FAILED, error=redact(f"token error: {exc}"))
+            store.update_status(
+                entry.op_id, OperationStatus.FAILED, error=redact(f"token error: {exc}")
+            )
             queue.fail(entry.op_id)
             return False
 
@@ -243,7 +260,9 @@ class RunnerWorker:
             protected = ctx.config.is_protected(entry.environment)
             rbac.require(_principal_from_payload(payload), action, protected=protected)
         except (KeyError, ValueError, rbac.AccessDenied) as exc:
-            store.update_status(entry.op_id, OperationStatus.FAILED, error=redact(f"rbac error: {exc}"))
+            store.update_status(
+                entry.op_id, OperationStatus.FAILED, error=redact(f"rbac error: {exc}")
+            )
             queue.fail(entry.op_id)
             return False
 
@@ -343,7 +362,22 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
 
     if kind == OperationKind.BACKUP.value:
         result = run_backup(svc_ctx, env)
-        op_ctx.emit(f"backup complete: {result.backup_id}", phase="backup")
+        op_ctx.emit(
+            f"backup complete: {result.backup_id}",
+            phase="backup",
+            data={
+                "backup_id": result.backup_id,
+                "remote_uri": result.remote_uri,
+                "remote_status": result.remote_status,
+            },
+        )
+        if result.remote_error:
+            op_ctx.emit(
+                f"remote backup warning: {result.remote_error}",
+                phase="remote_backup",
+                level="warning",
+                data={"remote_status": result.remote_status},
+            )
 
     elif kind == OperationKind.CLONE.value:
         source = params.get("source", "production")
@@ -352,29 +386,399 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
 
     elif kind == OperationKind.DR_DRILL.value:
         cfg = svc_ctx.project.config
-        db_adapter = make_context_db_adapter(svc_ctx.project)
-        fs_adapter = FilestoreAdapter()
+        cfg.env(env)
+        runtime = DockerComposeDrillRuntime(svc_ctx.project)
 
         def healthcheck_fn(url: str) -> bool:
-            try:
-                from odooctl.odoo.healthcheck import check_url
+            from odooctl.odoo.healthcheck import check_url
 
-                check_url(url, timeout=cfg.healthcheck.timeout_seconds, retries=1, interval=1)
-                return True
-            except Exception:
-                return False
+            check_url(
+                url,
+                timeout=cfg.healthcheck.timeout_seconds,
+                retries=cfg.healthcheck.retries,
+                interval=cfg.healthcheck.interval_seconds,
+            )
+            return True
 
         result = run_dr_drill(
             environment=env,
+            expected_project=cfg.project.name,
             backups_root=svc_ctx.project.backups_dir,
-            db_adapter=db_adapter,
-            fs_adapter=fs_adapter,
             healthcheck_fn=healthcheck_fn,
             is_protected_fn=cfg.is_protected,
+            runtime_filestore_root=(
+                f"{cfg.odoo.filestore_container_path.rstrip('/')}/filestore"
+            ),
+            prepare_runtime_fn=runtime.prepare,
+            restore_database_fn=runtime.restore_database,
+            restore_filestore_fn=runtime.restore_filestore,
+            start_runtime_fn=runtime.start,
+            stop_runtime_fn=runtime.stop,
         )
         if result.status != "success":
             raise RuntimeError(result.message or "DR drill failed")
         op_ctx.emit(f"DR drill complete: {result.backup_id}", phase="dr_drill")
+
+    elif kind == OperationKind.SNAPSHOT_CREATE.value:
+        result = run_snapshot_create(svc_ctx, env)
+        op_ctx.emit(
+            f"snapshot {result.status}: {result.snapshot_id}",
+            phase="snapshot",
+            data={
+                "snapshot_id": result.snapshot_id,
+                "provider": result.provider,
+                "status": result.status,
+                "source_resource_id": result.source_resource_id,
+            },
+        )
+
+    elif kind == OperationKind.SNAPSHOT_RECONCILE.value:
+        snapshot_id = str(params.get("snapshot_id", ""))
+        if not snapshot_id:
+            raise ValueError("snapshot_reconcile requires 'snapshot_id' in params")
+        result = run_snapshot_reconcile(
+            svc_ctx,
+            snapshot_id,
+            expected_environment=env,
+        )
+        op_ctx.emit(
+            f"snapshot {result.status}: {result.snapshot_id}",
+            phase="snapshot",
+            data={
+                "snapshot_id": result.snapshot_id,
+                "status": result.status,
+                "source_resource_id": result.source_resource_id,
+            },
+        )
+
+    elif kind == OperationKind.SNAPSHOT_RESTORE.value:
+        snapshot_id = str(params.get("snapshot_id", ""))
+        if not snapshot_id:
+            raise ValueError("snapshot_restore requires 'snapshot_id' in params")
+        execute = params.get("execute", False)
+        if not isinstance(execute, bool):
+            raise ValueError("snapshot_restore 'execute' must be a boolean")
+        result = run_snapshot_restore(
+            svc_ctx,
+            snapshot_id,
+            execute=execute,
+            confirm_snapshot_id=params.get("confirm_snapshot"),
+            confirm_resource_id=params.get("confirm_resource"),
+            expected_environment=env,
+        )
+        op_ctx.emit(
+            (
+                f"snapshot recovery {result.status}"
+                if result.executed
+                else "snapshot recovery planned"
+            ),
+            phase="snapshot_restore",
+            data={
+                "snapshot_id": snapshot_id,
+                "source_resource_id": result.plan.source_resource_id,
+                "status": result.status,
+                "message": result.message,
+                "restored_resource_ids": list(result.restored_resource_ids),
+                "plan": {
+                    "provider": result.plan.provider,
+                    "commands": [list(command) for command in result.plan.commands],
+                    "destructive": result.plan.destructive,
+                    "notes": list(result.plan.notes),
+                },
+            },
+        )
+
+    elif kind == OperationKind.PITR_BASE_CREATE.value:
+        from odooctl.services.pitr import create_base_backup
+
+        manifest = create_base_backup(svc_ctx, env)
+        op_ctx.emit(
+            f"PITR base complete: {manifest.base_backup_id}",
+            phase="pitr_base",
+            data={
+                "base_backup_id": manifest.base_backup_id,
+                "system_identifier": manifest.system_identifier,
+                "end_wal": manifest.end_wal,
+                "remote_uri": manifest.remote_uri,
+            },
+        )
+
+    elif kind == OperationKind.PITR_RECONCILE.value:
+        from odooctl.services.pitr import reconcile_retention
+
+        result = reconcile_retention(svc_ctx, env)
+        op_ctx.emit(
+            "PITR retention reconciliation complete",
+            phase="pitr_retention",
+            data={
+                "retained_base_backup_ids": list(
+                    result.retained_base_backup_ids
+                ),
+                "deleted_base_backup_ids": list(
+                    result.deleted_base_backup_ids
+                ),
+                "deleted_wal_filenames": list(
+                    result.deleted_wal_filenames
+                ),
+            },
+        )
+
+    elif kind == OperationKind.PITR_RESTORE.value:
+        from odooctl.services.pitr import execute_restore
+
+        plan_id = params.get("plan_id")
+        if not isinstance(plan_id, str) or not plan_id:
+            raise ValueError(
+                "pitr_restore requires a non-empty string 'plan_id'"
+            )
+        result = execute_restore(svc_ctx, env, plan_id)
+        op_ctx.emit(
+            f"PITR restore verified: {result.restore_id}",
+            phase="pitr_restore",
+            data={
+                "restore_id": result.restore_id,
+                "new_database": result.new_database,
+                "target_time": result.target_time,
+                "recovered_lsn": result.recovered_lsn,
+            },
+        )
+
+    elif kind == OperationKind.PITR_CUTOVER.value:
+        from odooctl.services.pitr import cutover_restore
+
+        restore_id = params.get("restore_id")
+        confirm_environment = params.get("confirm_environment")
+        confirm_database = params.get("confirm_database")
+        accept_database_only = params.get("accept_database_only")
+        if not isinstance(restore_id, str) or not restore_id:
+            raise ValueError(
+                "pitr_cutover requires a non-empty string 'restore_id'"
+            )
+        if not isinstance(confirm_environment, str):
+            raise ValueError(
+                "pitr_cutover requires string 'confirm_environment'"
+            )
+        if not isinstance(confirm_database, str):
+            raise ValueError(
+                "pitr_cutover requires string 'confirm_database'"
+            )
+        if not isinstance(accept_database_only, bool):
+            raise ValueError(
+                "pitr_cutover 'accept_database_only' must be a boolean"
+            )
+        result = cutover_restore(
+            svc_ctx,
+            env,
+            restore_id,
+            confirm_environment=confirm_environment,
+            confirm_database=confirm_database,
+            accept_database_only=accept_database_only,
+        )
+        op_ctx.emit(
+            f"PITR cutover complete: {result.restore_id}",
+            phase="pitr_cutover",
+            data={
+                "restore_id": result.restore_id,
+                "database": result.database,
+                "filestore_consistency": (
+                    result.filestore_consistency
+                ),
+            },
+        )
+
+    elif kind == OperationKind.FILESTORE_MIGRATE.value:
+        from odooctl.services.filestore_storage import (
+            cutover_migration,
+            delete_inactive_remote_marker,
+            delete_source_after_cutover,
+            download_migration,
+            plan_migration,
+            sync_migration,
+            verify_migration,
+        )
+
+        action = params.get("action")
+        if not isinstance(action, str):
+            raise ValueError(
+                "filestore_migrate requires a string 'action'"
+            )
+        migration_id = params.get("migration_id")
+        if action != "plan" and (
+            not isinstance(migration_id, str) or not migration_id
+        ):
+            raise ValueError(
+                "filestore_migrate requires a string 'migration_id'"
+            )
+
+        if action == "plan":
+            manifest = plan_migration(svc_ctx, env)
+            op_ctx.emit(
+                f"filestore migration planned: {manifest.migration_id}",
+                phase="filestore_plan",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "inventory_sha256": manifest.inventory_sha256,
+                    "object_count": len(manifest.entries),
+                    "total_size": manifest.total_size,
+                },
+            )
+        elif action == "sync":
+            manifest = sync_migration(svc_ctx, env, migration_id)
+            op_ctx.emit(
+                f"filestore migration synced: {manifest.migration_id}",
+                phase="filestore_sync",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "inventory_sha256": manifest.inventory_sha256,
+                },
+            )
+        elif action == "verify":
+            result = verify_migration(svc_ctx, env, migration_id)
+            op_ctx.emit(
+                f"filestore migration verified: {result.migration_id}",
+                phase="filestore_verify",
+                data={
+                    "migration_id": result.migration_id,
+                    "inventory_sha256": result.inventory_sha256,
+                    "object_count": result.object_count,
+                    "total_size": result.total_size,
+                },
+            )
+        elif action == "cutover":
+            confirm_environment = params.get("confirm_environment")
+            confirm_source_retained = params.get(
+                "confirm_source_retained"
+            )
+            if not isinstance(confirm_environment, str):
+                raise ValueError(
+                    "filestore cutover requires string "
+                    "'confirm_environment'"
+                )
+            if not isinstance(confirm_source_retained, bool):
+                raise ValueError(
+                    "filestore cutover requires boolean "
+                    "'confirm_source_retained'"
+                )
+            manifest = cutover_migration(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_environment=confirm_environment,
+                confirm_source_retained=confirm_source_retained,
+            )
+            op_ctx.emit(
+                f"filestore cutover complete: {manifest.migration_id}",
+                phase="filestore_cutover",
+                data={
+                    "migration_id": manifest.migration_id,
+                    "source_retained": not manifest.source_deleted,
+                },
+            )
+        elif action == "download":
+            destination = params.get("destination")
+            if not isinstance(destination, str) or not destination:
+                raise ValueError(
+                    "filestore download requires string 'destination'"
+                )
+            destination_path = Path(destination)
+            if (
+                destination_path.is_absolute()
+                or ".." in destination_path.parts
+                or "\\" in destination
+                or any(ord(character) < 32 for character in destination)
+            ):
+                raise ValueError(
+                    "queued filestore download destination must be "
+                    "project-relative"
+                )
+            resolved_destination = (
+                svc_ctx.project.root / destination_path
+            ).resolve(strict=False)
+            if (
+                resolved_destination == svc_ctx.project.root
+                or not resolved_destination.is_relative_to(
+                    svc_ctx.project.root
+                )
+            ):
+                raise ValueError(
+                    "queued filestore download destination escapes the "
+                    "project root"
+                )
+            target = download_migration(
+                svc_ctx,
+                env,
+                migration_id,
+                resolved_destination,
+            )
+            op_ctx.emit(
+                f"filestore migration downloaded: {migration_id}",
+                phase="filestore_download",
+                data={
+                    "migration_id": migration_id,
+                    "destination": str(target),
+                },
+            )
+        elif action == "delete_source":
+            confirm_environment = params.get("confirm_environment")
+            confirm_migration_id = params.get(
+                "confirm_migration_id"
+            )
+            delete_source = params.get("delete_source")
+            if not isinstance(confirm_environment, str):
+                raise ValueError(
+                    "filestore source deletion requires string "
+                    "'confirm_environment'"
+                )
+            if not isinstance(confirm_migration_id, str):
+                raise ValueError(
+                    "filestore source deletion requires string "
+                    "'confirm_migration_id'"
+                )
+            if not isinstance(delete_source, bool):
+                raise ValueError(
+                    "filestore source deletion requires boolean "
+                    "'delete_source'"
+                )
+            manifest = delete_source_after_cutover(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_environment=confirm_environment,
+                confirm_migration_id=confirm_migration_id,
+                delete_source=delete_source,
+            )
+            op_ctx.emit(
+                f"filestore source deleted: {manifest.migration_id}",
+                phase="filestore_delete_source",
+                data={"migration_id": manifest.migration_id},
+            )
+        elif action == "delete_remote_marker":
+            confirm_migration_id = params.get(
+                "confirm_migration_id"
+            )
+            if not isinstance(confirm_migration_id, str):
+                raise ValueError(
+                    "filestore marker deletion requires string "
+                    "'confirm_migration_id'"
+                )
+            key = delete_inactive_remote_marker(
+                svc_ctx,
+                env,
+                migration_id,
+                confirm_migration_id=confirm_migration_id,
+            )
+            op_ctx.emit(
+                f"filestore remote marker deleted: {migration_id}",
+                phase="filestore_delete_remote_marker",
+                data={
+                    "migration_id": migration_id,
+                    "key": key,
+                },
+            )
+        else:
+            raise ValueError(
+                f"unsupported filestore_migrate action: {action!r}"
+            )
 
     elif kind == OperationKind.MIGRATE_REHEARSAL.value:
         from odooctl.migration.matrix import supported_paths
@@ -398,11 +802,7 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
         path_requires_ou = any(p.requires_openupgrade for p in matrix_paths)
 
         def _upgrade_fn(throwaway_db: str, tgt_ver: str) -> UpgradeResult:
-            from odooctl.adapters.docker_compose import DockerComposeAdapter
-
-            compose = DockerComposeAdapter(
-                cfg.runtime.compose_file, project_dir=str(svc_ctx.project.root)
-            )
+            runtime = make_runtime_adapter(svc_ctx.project, environment=env)
             if use_openupgrade:
                 from odooctl.migration.openupgrade import openupgrade_db_command
 
@@ -415,12 +815,14 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
             else:
                 cmd = [
                     "odoo",
-                    "--database", throwaway_db,
-                    "--update", "all",
+                    "--database",
+                    throwaway_db,
+                    "--update",
+                    "all",
                     "--stop-after-init",
                 ]
             try:
-                compose.exec(cfg.odoo.service, cmd, stream=True)
+                runtime.exec(cfg.odoo.service, cmd, stream=True)
                 return UpgradeResult(ok=True)
             except Exception as exc:
                 return UpgradeResult(ok=False, warnings=[str(exc)])

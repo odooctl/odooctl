@@ -10,10 +10,13 @@ from odooctl.adapters.db import make_db_adapter as make_context_db_adapter
 from odooctl.adapters.filestore import FilestoreAdapter, make_filestore_adapter
 from odooctl.adapters.postgres import PostgresAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
 from odooctl.odoo.db_swap import swap_temp_database
 from odooctl.odoo.healthcheck import check_url, with_db_selector
 from odooctl.odoo.module_update import update_modules_compose
-from odooctl.odoo.sanitize import sanitize_database
+from odooctl.odoo.neutralize import neutralize_database, probe_native_neutralization
+from odooctl.metadata.models import SanitizationMetadata
+from odooctl.metadata.store import MetadataStore
 from odooctl.services.models import CloneResult
 
 if TYPE_CHECKING:
@@ -41,9 +44,7 @@ def run_clone(
     if cfg.is_protected(source) and not should_sanitize:
         raise RuntimeError("Refusing to clone protected environment data without sanitization enabled")
 
-    compose_path = ctx.project.compose_file
-    if not compose_path.exists():
-        raise FileNotFoundError(f"Compose file not found: {compose_path}")
+    validate_runtime_definition(ctx.project)
 
     scheme = cfg.healthcheck.scheme or dst.scheme
     base_url = public_url(dst.domain, scheme=scheme, port=dst.port)
@@ -63,6 +64,21 @@ def run_clone(
     if missing_env_vars:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing_env_vars)}")
 
+    sanitization_sql_files = ctx.project.sanitization_sql_files()
+    if should_sanitize:
+        for sql_file in sanitization_sql_files:
+            if not sql_file.exists():
+                raise FileNotFoundError(
+                    f"Configured sanitization SQL file does not exist: {sql_file}"
+                )
+    compose = make_runtime_adapter(
+        ctx.project,
+        environment=target,
+        compose_adapter_cls=DockerComposeAdapter,
+    )
+    native_capability = (
+        probe_native_neutralization(cfg, compose=compose) if should_sanitize else None
+    )
     pg = make_context_db_adapter(ctx.project) if cfg.runtime.execution_mode == "docker" else PostgresAdapter(cfg.postgres)
     fs = make_filestore_adapter(ctx.project, dst) if dst.filestore_volume else FilestoreAdapter()
     temp_db = f"{dst.db_name}{cfg.sanitization.temp_db_suffix}"
@@ -82,9 +98,21 @@ def run_clone(
             tmp_dump.unlink(missing_ok=True)
     src_filestore = src.filestore_path if src.filestore_volume else str(ctx.project.resolve_path(src.filestore_path))
     dst_filestore = dst.filestore_path if dst.filestore_volume else str(ctx.project.resolve_path(dst.filestore_path))
-    fs.copy(src_filestore, dst_filestore)
+    neutralization = None
     if should_sanitize:
-        sanitize_database(pg, temp_db, dst, cfg, sanitization_profile, sql_files=ctx.project.sanitization_sql_files())
+        neutralization = neutralize_database(
+            pg=pg,
+            db_name=temp_db,
+            env=dst,
+            cfg=cfg,
+            profile=sanitization_profile,
+            sql_files=sanitization_sql_files,
+            compose=compose,
+            native_capability=native_capability,
+        )
+    # Do not replace the live target filestore until neutralization and all
+    # extension verification checks have passed.
+    fs.copy(src_filestore, dst_filestore)
     swap_temp_database(
         pg,
         temp_db=temp_db,
@@ -92,12 +120,27 @@ def run_clone(
         target_env_name=target,
         is_protected_fn=cfg.is_protected,
     )
-    compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(ctx.project.root))
+    if neutralization:
+        MetadataStore(ctx.project.state_dir).save_sanitization(
+            SanitizationMetadata(
+                project=cfg.project.name,
+                source_environment=source,
+                target_environment=target,
+                database=dst.db_name,
+                policy=neutralization.policy,
+                native_status=neutralization.native_status,
+                profile=neutralization.profile,
+                extension_statements=neutralization.extension_statements,
+                custom_sql_files=neutralization.custom_sql_files,
+                verification_checks=list(neutralization.verification_checks),
+            )
+        )
     update_modules_compose(
         compose,
         cfg.odoo.service,
         dst.db_name,
         dst.update_modules,
+        cli_command=cfg.odoo.cli_command,
         db_host=cfg.odoo.db_host,
         db_user=cfg.odoo.db_user,
         db_password_env=cfg.odoo.db_password_env,
@@ -114,4 +157,7 @@ def run_clone(
         retries=cfg.healthcheck.retries,
         interval=cfg.healthcheck.interval_seconds,
     )
-    return CloneResult(url=base_url)
+    return CloneResult(
+        url=base_url,
+        native_neutralization=neutralization.native_status if neutralization else None,
+    )

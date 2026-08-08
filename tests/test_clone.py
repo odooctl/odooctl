@@ -1,10 +1,171 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from odooctl.commands.clone import execute
+from odooctl.utils.shell import CommandResult
+
+
+def _exercise_clone_neutralization_failure(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    phase: str,
+) -> list[str]:
+    config = tmp_path / "odooctl.yml"
+    config.write_text(
+        """project:
+  name: failure-contract
+  odoo_version: "19.0"
+runtime:
+  compose_file: docker-compose.yml
+postgres:
+  host: localhost
+  port: 5432
+  user: odoo
+  password_env: ODOO_DB_PASSWORD
+odoo:
+  image: registry/odoo:latest
+  service: odoo
+environments:
+  production:
+    branch: main
+    domain: odoo.example.com
+    db_name: odoo_prod
+    filestore_path: /srv/filestore/prod
+  staging:
+    branch: staging
+    domain: staging.example.com
+    db_name: odoo_staging
+    filestore_path: /srv/filestore/staging
+    clone_from: production
+    update_modules: [sale]
+    sanitize: true
+"""
+    )
+    (tmp_path / "docker-compose.yml").touch()
+    events: list[str] = []
+
+    class DummyPostgres:
+        def __init__(self, config):
+            events.append("postgres_init")
+
+        def dump(self, db_name, output):
+            events.append("dump")
+
+        def restore(self, db_name, dump_path):
+            events.append("restore")
+
+        def psql(self, db_name, sql):
+            if "sanitization verification failed" in sql:
+                events.append("verification")
+                if phase == "verification":
+                    raise RuntimeError("verification failed")
+            else:
+                events.append("extension")
+
+    class DummyFilestore:
+        def copy(self, source, target):
+            events.append("filestore")
+
+    class DummyCompose:
+        def __init__(self, compose_file, **kwargs):
+            events.append("compose_init")
+
+        def exec(self, service, args, **kwargs):
+            if "--help" in args:
+                events.append("probe")
+                return CommandResult(list(args), 0, "", "")
+            events.append("native")
+            if phase == "native":
+                raise RuntimeError("native execution failed")
+            return CommandResult(list(args), 0, "", "")
+
+        def restart(self, service):
+            events.append("restart")
+
+        def ps(self):
+            events.append("ps")
+            return "odoo running"
+
+    monkeypatch.setattr("odooctl.services.clone.PostgresAdapter", DummyPostgres)
+    monkeypatch.setattr("odooctl.services.clone.FilestoreAdapter", DummyFilestore)
+    monkeypatch.setattr("odooctl.services.clone.DockerComposeAdapter", DummyCompose)
+    monkeypatch.setattr(
+        "odooctl.services.clone.swap_temp_database",
+        lambda *args, **kwargs: events.append("swap"),
+    )
+    monkeypatch.setattr(
+        "odooctl.services.clone.MetadataStore.save_sanitization",
+        lambda *args, **kwargs: events.append("metadata"),
+    )
+    monkeypatch.setattr(
+        "odooctl.services.clone.update_modules_compose",
+        lambda *args, **kwargs: events.append("update"),
+    )
+    monkeypatch.setattr(
+        "odooctl.services.clone.check_url",
+        lambda *args, **kwargs: events.append("healthcheck"),
+    )
+    monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
+
+    expected_error = "native execution failed" if phase == "native" else "verification failed"
+    with pytest.raises(RuntimeError, match=expected_error):
+        execute("production", "staging", True, str(config))
+    return events
+
+
+def test_clone_native_execution_failure_stops_before_extensions_and_promotion(
+    tmp_path: Path,
+    monkeypatch,
+):
+    events = _exercise_clone_neutralization_failure(
+        tmp_path,
+        monkeypatch,
+        phase="native",
+    )
+
+    assert events[:2] == ["compose_init", "probe"]
+    assert "restore" in events
+    assert "native" in events
+    assert not {
+        "extension",
+        "verification",
+        "filestore",
+        "swap",
+        "metadata",
+        "update",
+        "restart",
+        "ps",
+        "healthcheck",
+    }.intersection(events)
+
+
+def test_clone_verification_failure_stops_before_promotion_and_later_actions(
+    tmp_path: Path,
+    monkeypatch,
+):
+    events = _exercise_clone_neutralization_failure(
+        tmp_path,
+        monkeypatch,
+        phase="verification",
+    )
+
+    assert "native" in events
+    assert "extension" in events
+    assert "verification" in events
+    assert not {
+        "filestore",
+        "swap",
+        "metadata",
+        "update",
+        "restart",
+        "ps",
+        "healthcheck",
+    }.intersection(events)
 
 
 def test_clone_orchestrates_dump_restore_sanitize_update_and_healthcheck(tmp_path: Path, monkeypatch):
@@ -37,8 +198,9 @@ def test_clone_orchestrates_dump_restore_sanitize_update_and_healthcheck(tmp_pat
         def __init__(self, compose_file, **kwargs):
             events.append(("compose_init", (compose_file,)))
 
-        def exec(self, service, args, *, stream=True):
+        def exec(self, service, args, *, stream=True, **kwargs):
             events.append(("exec", (service, tuple(args), stream)))
+            return CommandResult(list(args), 0, "", "")
 
         def restart(self, service):
             events.append(("restart", (service,)))
@@ -58,25 +220,36 @@ def test_clone_orchestrates_dump_restore_sanitize_update_and_healthcheck(tmp_pat
     url = execute("production", "staging", True, str(config))
 
     assert url == "https://staging.example.com"
-    assert events[0] == ("postgres_init", ("localhost", 5432, "odoo"))
-    assert events[1][0] == "dump" and events[1][1][0] == "odoo_prod" and str(events[1][1][1]).endswith(".dump")
-    assert events[2][0] == "restore" and events[2][1][0] == "odoo_staging_incoming" and str(events[2][1][1]).endswith(".dump")
-    assert events[3] == ("copy", ("/srv/filestore/prod", "/srv/filestore/staging"))
-    assert events[4][0] == "psql"
-    assert events[4][1][0] == "odoo_staging_incoming"
-    assert "ir_mail_server" in str(events[4][1][1])
-    assert events[5][0] == "psql" and "fetchmail_server" in str(events[5][1][1])
-    assert events[6][0] == "psql" and "ir_cron" in str(events[6][1][1])
-    assert events[7][0] == "psql" and "payment_provider" in str(events[7][1][1])
+    assert ("postgres_init", ("localhost", 5432, "odoo")) in events
+    dump = next(args for event, args in events if event == "dump")
+    restore = next(args for event, args in events if event == "restore")
+    assert dump[0] == "odoo_prod" and str(dump[1]).endswith(".dump")
+    assert restore[0] == "odoo_staging_incoming" and str(restore[1]).endswith(".dump")
+    assert ("copy", ("/srv/filestore/prod", "/srv/filestore/staging")) in events
+    psql_events = [args for event, args in events if event == "psql"]
+    assert psql_events
+    assert psql_events[0][0] == "odoo_staging_incoming"
+    assert "ir_mail_server" in str(psql_events[0][1])
+    assert any("fetchmail_server" in str(args[1]) for args in psql_events)
+    assert any("ir_cron" in str(args[1]) for args in psql_events)
+    assert any("payment_provider" in str(args[1]) for args in psql_events)
     psql_sql = [str(args[1]) for event, args in events if event == "psql" and args[0] == "odoo_staging_incoming"]
     assert "UPDATE ir_config_parameter SET value = 'https://staging.example.com' WHERE key = 'web.base.url';" in psql_sql
     assert any("webhook" in sql and "callback" in sql for sql in psql_sql)
     assert any("api_key" in sql and "secret" in sql and "token" in sql for sql in psql_sql)
     assert ("compose_init", ("docker-compose.yml",)) in events
+    assert any(event == "exec" and "--help" in args[1] for event, args in events)
+    assert any(event == "exec" and "neutralize" in args[1] and "--help" not in args[1] for event, args in events)
     assert ("update", ("odoo", "odoo_staging", ("sale",))) in events
     assert events[-3] == ("restart", ("odoo",))
     assert events[-2] == ("ps", ())
     assert events[-1] == ("healthcheck", ("https://staging.example.com/web/health", 10, 3, 1))
+    metadata = json.loads(
+        (tmp_path / ".odooctl" / "sanitizations" / "staging-latest.json").read_text()
+    )
+    assert metadata["native_status"] == "executed"
+    assert metadata["database"] == "odoo_staging"
+    assert metadata["verified"] is True
 
 
 def test_clone_supports_explicit_sanitization_profiles(tmp_path: Path, monkeypatch):
@@ -109,8 +282,8 @@ def test_clone_supports_explicit_sanitization_profiles(tmp_path: Path, monkeypat
         def __init__(self, compose_file, **kwargs):
             pass
 
-        def exec(self, service, args, *, stream=True):
-            pass
+        def exec(self, service, args, *, stream=True, **kwargs):
+            return CommandResult(list(args), 0, "", "")
 
         def restart(self, service):
             pass
@@ -170,8 +343,8 @@ def test_clone_applies_configured_sanitization_sql_files(tmp_path: Path, monkeyp
         def __init__(self, compose_file, **kwargs):
             pass
 
-        def exec(self, service, args, *, stream=True):
-            pass
+        def exec(self, service, args, *, stream=True, **kwargs):
+            return CommandResult(list(args), 0, "", "")
 
         def restart(self, service):
             pass
@@ -253,6 +426,9 @@ def test_clone_verification_fails_when_target_service_is_not_running(tmp_path: P
     class DummyCompose:
         def __init__(self, compose_file, **kwargs):
             pass
+
+        def exec(self, service, args, **kwargs):
+            return CommandResult(list(args), 0, "", "")
 
         def restart(self, service):
             pass

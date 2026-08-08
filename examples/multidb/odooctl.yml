@@ -17,8 +17,13 @@ postgres:
 backups:
   local_path: backups
 
+snapshots:
+  provider: none
+  pre_deploy: disabled
+
 odoo:
   image: odoo:19.0
+  cli_command: odoo
   config_path: /etc/odoo/odoo.conf
   service: odoo
   db_host: db
@@ -58,6 +63,7 @@ environments:
       - base
 
 sanitization:
+  native_neutralize: preferred
   disable_mail_servers: true
   disable_fetchmail: true
   disable_crons: true

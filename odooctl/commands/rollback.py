@@ -8,6 +8,7 @@ from odooctl.commands.restore import execute as restore_execute
 from odooctl.context import ProjectContext
 from odooctl.adapters.docker_compose import DockerComposeAdapter
 from odooctl.adapters.reverse_proxy import public_url
+from odooctl.adapters.runtime import make_runtime_adapter, validate_runtime_definition
 from odooctl.metadata.models import DeploymentMetadata
 from odooctl.metadata.store import MetadataStore
 from odooctl.odoo.healthcheck import check_url, with_db_selector
@@ -19,11 +20,15 @@ from odooctl.utils.logging import warn
 from odooctl.utils.shell import run
 
 
-def _compose_adapter(compose_file: str, project_root: Path):
+def _runtime_adapter(context: ProjectContext, environment: str):
     try:
-        return DockerComposeAdapter(compose_file, project_dir=str(project_root))
+        return make_runtime_adapter(
+            context,
+            environment=environment,
+            compose_adapter_cls=DockerComposeAdapter,
+        )
     except TypeError:
-        return DockerComposeAdapter(compose_file)
+        return DockerComposeAdapter(context.config.runtime.compose_file)
 
 
 def _store(root: Path):
@@ -77,9 +82,7 @@ def execute(environment: str, mode: str = "code", backup: str | None = None, con
         if missing_env_vars:
             raise RuntimeError(f"Missing required environment variables: {', '.join(missing_env_vars)}")
 
-    compose_path = context.compose_file
-    if not compose_path.exists():
-        raise FileNotFoundError(f"Compose file not found: {compose_path}")
+    validate_runtime_definition(context)
 
     with run_operation(
         op_store,
@@ -103,7 +106,7 @@ def _run_rollback(context, environment, mode, backup, config_path, op_ctx=None):
         public_url(env.domain, scheme=scheme, port=env.port) + cfg.healthcheck.path,
         env.db_name if env.db_selector else None,
     )
-    compose = _compose_adapter(cfg.runtime.compose_file, context.root)
+    compose = _runtime_adapter(context, environment)
     meta_store = _store(context.state_dir)
     status = "failed"
     message = None

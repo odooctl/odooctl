@@ -386,6 +386,394 @@ def test_operator_cannot_enqueue_dr_drill_on_protected_env(client):
     assert resp.status_code == 403
 
 
+def test_snapshot_operations_have_backup_and_restore_rbac_classes(client):
+    operator = _mint_operator()
+    create = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_create",
+            "environment": "production",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert create.status_code == 202
+
+    reconcile = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_reconcile",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert reconcile.status_code == 202
+
+    restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_restore",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {operator}"},
+    )
+    assert restore.status_code == 403
+
+    admin = _mint_admin()
+    restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_restore",
+            "environment": "production",
+            "params": {"snapshot_id": "production-snapshot-1"},
+        },
+        headers={"Authorization": f"Bearer {admin}"},
+    )
+    assert restore.status_code == 202
+
+
+def test_snapshot_api_rejects_environment_label_outside_provider_binding(
+    client,
+    project_dir,
+):
+    with (project_dir / "odooctl.yml").open("a") as handle:
+        handle.write(
+            """
+snapshots:
+  provider: aws_ebs
+  environment: production
+  aws_ebs:
+    instance_id: i-0123456789abcdef0
+    region: us-east-1
+    recovery_availability_zone: us-east-1a
+"""
+        )
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "snapshot_create",
+            "environment": "staging",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+    assert "bound to environment 'production'" in response.json()["detail"]
+    queue = project_dir / ".odooctl" / "queue"
+    assert not queue.exists() or not list(queue.glob("*.json"))
+
+
+def test_snapshot_api_exposes_exact_restore_confirmation_identity(
+    client,
+    project_dir,
+):
+    from odooctl.metadata.models import SnapshotManifest, SnapshotResource
+    from odooctl.metadata.store import MetadataStore
+
+    manifest = SnapshotManifest(
+        snapshot_id="production-20260730-deadbeef",
+        project="test-project",
+        environment="production",
+        provider="hetzner_cloud",
+        source_resource_id="424242",
+        resources=[
+            SnapshotResource(
+                snapshot_resource_id="12345",
+                source_resource_id="424242",
+                kind="server_root_disk",
+                state="available",
+            )
+        ],
+        scope=["hetzner_server_local_root_disk"],
+        consistency="powered_off_consistent",
+    )
+    MetadataStore(project_dir / ".odooctl").save_snapshot_manifest(manifest)
+    headers = {"Authorization": f"Bearer {_mint_viewer()}"}
+
+    listed = client.get(
+        "/projects/test-project/snapshots",
+        headers=headers,
+    )
+    detail = client.get(
+        f"/projects/test-project/snapshots/{manifest.snapshot_id}",
+        headers=headers,
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()["snapshots"][0]["source_resource_id"] == "424242"
+    assert detail.status_code == 200
+    assert detail.json()["snapshot_id"] == manifest.snapshot_id
+    assert detail.json()["source_resource_id"] == "424242"
+
+
+def _enable_pitr(project_dir):
+    with (project_dir / "odooctl.yml").open("a") as handle:
+        handle.write(
+            """
+pitr:
+  enabled: true
+  environment: production
+  cluster_id: primary-cluster
+  system_identifier: "7429384729384729"
+  recovery_image: postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  filestore_policy: database_only
+  destination:
+    bucket: pitr-archive
+    prefix: odoo/pitr
+"""
+        )
+
+
+def _enable_filestore_migration(project_dir):
+    config = project_dir / "odooctl.yml"
+    text = config.read_text()
+    text = text.replace(
+        "    clone_from: production\n",
+        (
+            "    clone_from: production\n"
+            "    filestore_backend:\n"
+            "      type: posix_object_mount\n"
+            "      mount_path: ./filestore-object/staging\n"
+        ),
+    )
+    config.write_text(text)
+
+
+def test_pitr_api_rejects_disabled_or_wrong_environment(
+    client,
+    project_dir,
+):
+    disabled = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_base_create",
+            "environment": "production",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+    assert disabled.status_code == 400
+    assert "PITR is disabled" in disabled.json()["detail"]
+
+    _enable_pitr(project_dir)
+    wrong_environment = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_base_create",
+            "environment": "staging",
+            "params": {},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+    assert wrong_environment.status_code == 400
+    assert "bound to environment 'production'" in (
+        wrong_environment.json()["detail"]
+    )
+
+
+def test_pitr_api_rbac_and_destructive_confirmation(
+    client,
+    project_dir,
+):
+    _enable_pitr(project_dir)
+    operator_headers = {
+        "Authorization": f"Bearer {_mint_operator()}"
+    }
+    admin_headers = {"Authorization": f"Bearer {_mint_admin()}"}
+
+    for kind in ("pitr_base_create", "pitr_reconcile"):
+        response = client.post(
+            "/projects/test-project/operations",
+            json={
+                "kind": kind,
+                "environment": "production",
+                "params": {},
+            },
+            headers=operator_headers,
+        )
+        assert response.status_code == 202
+
+    denied_restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_restore",
+            "environment": "production",
+            "params": {"plan_id": "plan-safe-123"},
+        },
+        headers=operator_headers,
+    )
+    assert denied_restore.status_code == 403
+
+    accepted_restore = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_restore",
+            "environment": "production",
+            "params": {"plan_id": "plan-safe-123"},
+        },
+        headers=admin_headers,
+    )
+    assert accepted_restore.status_code == 202
+
+    rejected_cutover = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_cutover",
+            "environment": "production",
+            "params": {
+                "restore_id": "restore-safe-123",
+                "confirm_environment": "production",
+                "confirm_database": "wrong-db",
+                "accept_database_only": True,
+            },
+        },
+        headers=admin_headers,
+    )
+    assert rejected_cutover.status_code == 400
+
+    accepted_cutover = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "pitr_cutover",
+            "environment": "production",
+            "params": {
+                "restore_id": "restore-safe-123",
+                "confirm_environment": "production",
+                "confirm_database": "test_prod",
+                "accept_database_only": True,
+            },
+        },
+        headers=admin_headers,
+    )
+    assert accepted_cutover.status_code == 202
+
+
+@pytest.mark.parametrize(
+    ("kind", "params"),
+    [
+        ("pitr_restore", {"plan_id": "../../escape"}),
+        ("pitr_restore", {"plan_id": ""}),
+        (
+            "pitr_cutover",
+            {
+                "restore_id": "../escape",
+                "confirm_environment": "production",
+                "confirm_database": "test_prod",
+                "accept_database_only": True,
+            },
+        ),
+    ],
+)
+def test_pitr_api_rejects_unsafe_identity_before_queue(
+    client,
+    project_dir,
+    kind,
+    params,
+):
+    _enable_pitr(project_dir)
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": kind,
+            "environment": "production",
+            "params": params,
+        },
+        headers={"Authorization": f"Bearer {_mint_admin()}"},
+    )
+
+    assert response.status_code == 400
+    queue = project_dir / ".odooctl" / "queue"
+    assert not queue.exists() or not list(queue.glob("*.json"))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"action": "unknown"},
+        {"action": "sync", "migration_id": "../../escape"},
+        {
+            "action": "download",
+            "migration_id": "staging_filestore_123",
+            "destination": "/tmp/outside-project",
+        },
+        {
+            "action": "cutover",
+            "migration_id": "staging_filestore_123",
+            "confirm_environment": "production",
+            "confirm_source_retained": True,
+        },
+        {
+            "action": "delete_source",
+            "migration_id": "staging_filestore_123",
+            "confirm_environment": "staging",
+            "confirm_migration_id": "different",
+            "delete_source": True,
+        },
+    ],
+)
+def test_filestore_api_rejects_unsafe_or_incomplete_params(
+    client,
+    params,
+):
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": params,
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_filestore_api_enqueues_explicit_cutover(
+    client,
+    project_dir,
+):
+    _enable_filestore_migration(project_dir)
+    migration_id = "staging_filestore_123"
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": {
+                "action": "cutover",
+                "migration_id": migration_id,
+                "confirm_environment": "staging",
+                "confirm_source_retained": True,
+            },
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["kind"] == "filestore_migrate"
+
+
+def test_filestore_api_rejects_project_without_migration_backend(
+    client,
+):
+    response = client.post(
+        "/projects/test-project/operations",
+        json={
+            "kind": "filestore_migrate",
+            "environment": "staging",
+            "params": {"action": "plan"},
+        },
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+    )
+
+    assert response.status_code == 400
+    assert "explicit" in response.json()["detail"]
+
+
 def _enqueue_backup(client, token):
     resp = client.post(
         "/projects/test-project/operations",

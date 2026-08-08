@@ -87,6 +87,14 @@ host-level judgment — and the runner marks them `failed` at dispatch time
 | `backup`            | yes              | —                              |
 | `clone`             | yes              | —                              |
 | `dr_drill`          | yes              | —                              |
+| `snapshot_create`   | yes              | —                              |
+| `snapshot_reconcile`| yes              | —                              |
+| `snapshot_restore`  | yes              | —                              |
+| `pitr_base_create`  | yes              | —                              |
+| `pitr_reconcile`    | yes              | —                              |
+| `pitr_restore`      | yes              | —                              |
+| `pitr_cutover`      | yes              | —                              |
+| `filestore_migrate` | yes              | —                              |
 | `migrate_rehearsal` | yes              | —                              |
 | `restore`           | no (CLI-only)    | `odooctl restore`              |
 | `deploy`            | no (CLI-only)    | `odooctl deploy`               |
@@ -120,3 +128,16 @@ scope-limited, expiring tokens for runner authorization. If a future milestone
 introduces remote runners or at-rest requirements that need AES-GCM or
 asymmetric signatures, the `secrets`/`tokens` modules are the contained seams to
 upgrade.
+
+## Workload runtime boundary
+
+Lifecycle code talks to the `RuntimeAdapter` protocol rather than constructing
+Docker Compose directly. The boundary covers image fetch/build, deployment,
+restart, exec, byte streaming, logs, and workload status. The configured
+runtime is selected by one factory, while `docker_compose` remains the default
+and requires no configuration migration.
+
+Database and portable-backup adapters remain separate because their lifecycle
+and credentials are independent from the Odoo workload orchestrator. This is
+also why externally managed PostgreSQL can be paired with a Kubernetes runtime
+without pretending the database is a pod owned by odooctl.

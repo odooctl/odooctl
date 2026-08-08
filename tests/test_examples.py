@@ -18,3 +18,95 @@ def test_example_config_and_docs_are_checked_in():
     assert "environments:" in config_text
     assert "odooctl clone production staging --sanitize" in doc_text
     assert "odooctl status --config odooctl.yml --environment production --json" in doc_text
+
+
+def test_remote_backup_and_dr_docs_match_the_fail_closed_contract():
+    root = Path(__file__).resolve().parents[1]
+    markdown_paths = [
+        root / "README.md",
+        root / "CHANGELOG.md",
+        *(root / "docs").rglob("*.md"),
+    ]
+    all_markdown = "\n".join(path.read_text() for path in markdown_paths).lower()
+    for stale_claim in (
+        "local mirror",
+        "mirrored locally",
+        ".odooctl/remote-backups/",
+    ):
+        assert stale_claim not in all_markdown
+
+    backup_docs = (root / "docs" / "backup-restore.md").read_text()
+    for required_text in (
+        "`required`",
+        "`best_effort`",
+        "`disabled`",
+        "`verify_after_upload`",
+        "`grace_hours`",
+        "`orphan_grace_hours`",
+        "manual review",
+        "24-hex suffix",
+        "odooctl backup-remote list",
+        "odooctl backup-remote verify",
+        "odooctl backup-remote download",
+        "EnvironmentFile=",
+    ):
+        assert required_text in backup_docs
+
+    dr_docs = (root / "docs" / "disaster-recovery.md").read_text()
+    for required_text in (
+        "DockerComposeDrillRuntime",
+        "expected_project=config.project.name",
+        "prepare_runtime_fn=runtime.prepare",
+        "restore_database_fn=runtime.restore_database",
+        "restore_filestore_fn=runtime.restore_filestore",
+        "start_runtime_fn=runtime.start",
+        "stop_runtime_fn=runtime.stop",
+        "Custom-addon prerequisite",
+    ):
+        assert required_text in dr_docs
+
+
+def test_pitr_docs_cover_prerequisites_and_fail_closed_cutover():
+    root = Path(__file__).resolve().parents[1]
+    pitr_docs = (root / "docs" / "pitr.md").read_text()
+
+    for required_text in (
+        "PostgreSQL 13 or newer",
+        "pg_verifybackup",
+        "filestore_policy: database_only",
+        "odooctl pitr archive-config",
+        "odooctl pitr restore plan",
+        "odooctl pitr restore execute",
+        "odooctl pitr restore cutover",
+        "--accept-database-only",
+        "OID",
+        "odooctl pitr retention reconcile",
+        "odooctl pitr lease recover-expired",
+        "OWNER_STOPPED:LEASE_ID",
+    ):
+        assert required_text in pitr_docs
+
+
+def test_filestore_docs_cover_backends_and_explicit_deletion_controls():
+    root = Path(__file__).resolve().parents[1]
+    filestore_docs = (
+        root / "docs" / "filestore-storage.md"
+    ).read_text()
+
+    for required_text in (
+        "type: object_mirror",
+        "type: posix_object_mount",
+        "type: odoo_module",
+        "odooctl filestore migrate plan",
+        "odooctl filestore migrate sync",
+        "odooctl filestore migrate verify",
+        "odooctl filestore migrate cutover",
+        "--confirm-source-retained",
+        "odooctl filestore migrate download",
+        "odooctl filestore migrate delete-source",
+        "--delete-source",
+        "active.json",
+        "compare-and-swap",
+        "does not install the module",
+    ):
+        assert required_text in filestore_docs

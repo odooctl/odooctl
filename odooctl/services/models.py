@@ -59,6 +59,15 @@ class DoctorReport:
 @dataclass
 class BackupResult:
     backup_id: str
+    remote_uri: str | None = None
+    remote_status: Literal[
+        "disabled",
+        "pending",
+        "complete",
+        "degraded",
+        "failed",
+    ] = "disabled"
+    remote_error: str | None = None
 
 
 @dataclass
@@ -69,6 +78,7 @@ class RestoreResult:
 @dataclass
 class CloneResult:
     url: str
+    native_neutralization: str | None = None
 
 
 @dataclass
@@ -76,6 +86,7 @@ class DeployResult:
     environment: str
     status: str
     backup_id: str | None = None
+    snapshot_id: str | None = None
 
 
 @dataclass

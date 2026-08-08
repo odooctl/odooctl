@@ -20,6 +20,22 @@ def test_update_modules_invokes_odoo_stop_after_init(monkeypatch):
     assert seen["kwargs"]["stream"] is True
 
 
+def test_update_modules_uses_configured_odoo_cli(monkeypatch):
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+
+    monkeypatch.setattr(module_update, "run", fake_run)
+    module_update.update_modules_local(
+        "db",
+        ["sale"],
+        cli_command="/opt/odoo/odoo-bin",
+    )
+
+    assert seen["args"][0] == "/opt/odoo/odoo-bin"
+
+
 def test_update_modules_compose_passes_odoo_db_flags(monkeypatch):
     monkeypatch.setenv("ODOO_DB_PASSWORD", "secret")
     seen = {}
@@ -39,11 +55,12 @@ def test_update_modules_compose_passes_odoo_db_flags(monkeypatch):
         db_user="odoo",
         db_password_env="ODOO_DB_PASSWORD",
         config_path="/etc/odoo/odoo.conf",
+        cli_command="/opt/odoo/odoo-bin",
     )
 
     assert seen["service"] == "odoo"
     assert seen["args"] == [
-        "odoo",
+        "/opt/odoo/odoo-bin",
         "-d",
         "odoo_prod",
         "-u",

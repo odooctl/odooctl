@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from odooctl.commands.backup import redact_config_snapshot
-from odooctl.config import OdooCtlConfig, example_config, load_config
+from odooctl.config import OdooCtlConfig, RemoteBackupConfig, example_config, load_config
 
 
 EXAMPLE_PATH = Path(__file__).resolve().parents[1] / "examples" / "odooctl.yml"
@@ -39,12 +39,124 @@ def test_workflow_example_contains_deploy_command():
 
 
 def test_redact_config_snapshot_masks_sensitive_values():
-    raw = "admin_passwd = admin-secret\ndb_password = db-secret\nxmlrpc_port = 8069\n"
+    raw = (
+        "admin_passwd = admin-secret\n"
+        "db_password = db-secret\n"
+        "# old admin_passwd = commented-secret\n"
+        "; api_token = retired-token\n"
+        "# old admin_passwd: colon-secret\n"
+        "; password was free-text-secret\n"
+        "# ordinary comment = unchanged\n"
+        "xmlrpc_port = 8069\n"
+    )
     redacted = redact_config_snapshot(raw)
     assert "admin-secret" not in redacted
     assert "db-secret" not in redacted
+    assert "commented-secret" not in redacted
+    assert "retired-token" not in redacted
+    assert "colon-secret" not in redacted
+    assert "free-text-secret" not in redacted
     assert "admin_passwd = ***REDACTED***" in redacted
+    assert "# old admin_passwd = ***REDACTED***" in redacted
+    assert "; api_token = ***REDACTED***" in redacted
+    assert "# ***REDACTED***" in redacted
+    assert "; ***REDACTED***" in redacted
+    assert "# ordinary comment = unchanged" in redacted
     assert "xmlrpc_port = 8069" in redacted
+
+
+def test_remote_backup_policy_defaults_to_best_effort_with_verification():
+    remote = RemoteBackupConfig(bucket="odoo-backups")
+
+    assert remote.policy == "best_effort"
+    assert remote.verify_after_upload is True
+    assert remote.orphan_grace_hours == 24
+
+
+def test_remote_backup_orphan_grace_must_leave_active_upload_window():
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        RemoteBackupConfig(
+            bucket="odoo-backups",
+            orphan_grace_hours=0,
+        )
+
+
+def test_retention_grace_must_leave_concurrent_publish_window():
+    from odooctl.config import RetentionConfig
+
+    retention = RetentionConfig()
+    assert retention.grace_hours == 1
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        RetentionConfig(grace_hours=0)
+
+
+def test_active_remote_backup_requires_bucket():
+    with pytest.raises(ValueError, match="bucket is required"):
+        RemoteBackupConfig()
+
+
+def test_disabled_remote_backup_can_omit_bucket():
+    remote = RemoteBackupConfig(policy="disabled")
+
+    assert remote.bucket is None
+
+
+def test_disabled_remote_backup_does_not_require_credential_envs():
+    cfg = OdooCtlConfig.model_validate(
+        {
+            **_base_config(),
+            "backups": {
+                "remote": {
+                    "policy": "disabled",
+                    "endpoint_env": "ODOO_S3_ENDPOINT",
+                    "access_key_env": "ODOO_S3_ACCESS_KEY",
+                    "secret_key_env": "ODOO_S3_SECRET_KEY",
+                    "encryption_algorithm": "aws:kms",
+                    "encryption_key_env": "ODOO_S3_KMS_KEY",
+                }
+            },
+        }
+    )
+
+    assert not {
+        "ODOO_S3_ENDPOINT",
+        "ODOO_S3_ACCESS_KEY",
+        "ODOO_S3_SECRET_KEY",
+        "ODOO_S3_KMS_KEY",
+    } & set(cfg.referenced_env_vars())
+
+
+def test_remote_backup_static_credentials_require_both_env_references():
+    with pytest.raises(ValueError, match="configured together"):
+        RemoteBackupConfig(
+            bucket="odoo-backups",
+            access_key_env="ODOO_S3_ACCESS_KEY",
+        )
+
+
+def test_remote_backup_encryption_key_requires_algorithm():
+    with pytest.raises(ValueError, match="requires encryption_algorithm"):
+        RemoteBackupConfig(
+            bucket="odoo-backups",
+            encryption_key_env="ODOO_BACKUP_KMS_KEY_ID",
+        )
+
+
+@pytest.mark.parametrize("prefix", ["/absolute", "../escape", "safe/../escape", "safe\\escape"])
+def test_remote_backup_prefix_rejects_unsafe_paths(prefix: str):
+    with pytest.raises(ValueError, match="prefix"):
+        RemoteBackupConfig(bucket="odoo-backups", prefix=prefix)
+
+
+@pytest.mark.parametrize("tier", ["daily", "weekly", "monthly"])
+def test_backup_retention_rejects_negative_tiers(tier: str):
+    with pytest.raises(ValueError):
+        OdooCtlConfig.model_validate(
+            {
+                **_base_config(),
+                "backups": {"retention": {tier: -1}},
+            }
+        )
 
 
 def test_missing_env_vars_reports_only_referenced_values(monkeypatch):

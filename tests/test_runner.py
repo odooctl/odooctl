@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -65,6 +66,7 @@ def _make_entry(
     env: str = "production",
     nonce: str | None = None,
     roles: list[str] | None = None,
+    params: dict | None = None,
 ) -> QueueEntry:
     extra: dict = {"roles": roles if roles is not None else ["operator"]}
     token = tokens.mint(
@@ -82,7 +84,7 @@ def _make_entry(
         project=project,
         environment=env,
         actor="api-client",
-        params_redacted={},
+        params_redacted=params or {},
         token=token,
     )
 
@@ -411,11 +413,459 @@ def test_runner_claims_and_executes_dr_drill(project_dir, fake_registry):
 
     assert did_work is True
     drill.assert_called_once()
+    drill_kwargs = drill.call_args.kwargs
+    assert drill_kwargs["expected_project"] == "test-project"
+    assert "db_adapter" not in drill_kwargs
+    assert "fs_adapter" not in drill_kwargs
+    assert callable(drill_kwargs["prepare_runtime_fn"])
+    assert callable(drill_kwargs["restore_database_fn"])
+    assert callable(drill_kwargs["restore_filestore_fn"])
     store = OperationStore(project_dir / ".odooctl")
     op = store.load(op_id)
     assert op.status == OperationStatus.SUCCEEDED
     events = store.load_events(op_id)
     assert any("DR drill complete: bk-drill" in e.message for e in events)
+
+
+def test_runner_claims_and_executes_snapshot_create(project_dir, fake_registry):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snapcreate1"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_CREATE,
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(op_id=op_id, kind="snapshot_create")
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_create",
+        return_value=SimpleNamespace(
+            snapshot_id="production-snapshot-1",
+            provider="aws_ebs",
+            status="complete",
+            source_resource_id="i-0123456789abcdef0",
+        ),
+    ) as create:
+        assert worker.claim_and_run() is True
+
+    create.assert_called_once()
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_snapshot_reconcile_forwards_environment_lock(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snapreconcile1"
+    snapshot_id = "production-20260730-deadbeef"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_RECONCILE,
+        "test-project",
+        "production",
+        "api-client",
+        {"snapshot_id": snapshot_id},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="snapshot_reconcile",
+            params={"snapshot_id": snapshot_id},
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_reconcile",
+        return_value=SimpleNamespace(
+            snapshot_id=snapshot_id,
+            status="complete",
+            source_resource_id="i-0123456789abcdef0",
+        ),
+    ) as reconcile:
+        assert worker.claim_and_run() is True
+
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    reconcile.assert_called_once()
+    assert reconcile.call_args.kwargs["expected_environment"] == "production"
+
+
+def test_runner_snapshot_restore_forwards_typed_confirmation_and_lock(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import Operation, OperationKind, OperationStatus
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "snaprestore1"
+    snapshot_id = "production-20260730-deadbeef"
+    store = OperationStore(project_dir / ".odooctl")
+    op = Operation.create(
+        OperationKind.SNAPSHOT_RESTORE,
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    op.id = op_id
+    store.save(op)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="snapshot_restore",
+            roles=["admin"],
+            params={
+                "snapshot_id": snapshot_id,
+                "execute": True,
+                "confirm_snapshot": snapshot_id,
+                "confirm_resource": "i-0123456789abcdef0",
+            },
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.runner.worker.run_snapshot_restore",
+        return_value=SimpleNamespace(
+            executed=True,
+            restored_resource_ids=("vol-new",),
+            status="pending",
+            message="volume creation is pending",
+            plan=SimpleNamespace(
+                provider="aws_ebs",
+                source_resource_id="i-0123456789abcdef0",
+                commands=(("aws", "ec2", "create-volume"),),
+                destructive=False,
+                notes=("unattached recovery volume",),
+            ),
+        ),
+    ) as restore:
+        assert worker.claim_and_run() is True
+
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    kwargs = restore.call_args.kwargs
+    assert kwargs["confirm_snapshot_id"] == snapshot_id
+    assert kwargs["confirm_resource_id"] == "i-0123456789abcdef0"
+    assert kwargs["expected_environment"] == "production"
+    result_event = next(
+        event
+        for event in store.load_events(op_id)
+        if event.phase == "snapshot_restore"
+    )
+    assert result_event.message == "snapshot recovery pending"
+    assert result_event.data["status"] == "pending"
+    assert result_event.data["message"] == "volume creation is pending"
+    assert result_event.data["source_resource_id"] == "i-0123456789abcdef0"
+    assert result_event.data["plan"]["commands"] == [
+        ["aws", "ec2", "create-volume"]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "service_name", "result"),
+    [
+        (
+            "pitr_base_create",
+            "create_base_backup",
+            SimpleNamespace(
+                base_backup_id="production_base_1",
+                system_identifier="7429384729384729",
+                end_wal="000000010000000000000010",
+                remote_uri="s3://archive/base/1",
+            ),
+        ),
+        (
+            "pitr_reconcile",
+            "reconcile_retention",
+            SimpleNamespace(
+                retained_base_backup_ids=("production_base_1",),
+                deleted_base_backup_ids=(),
+                deleted_wal_filenames=(),
+            ),
+        ),
+    ],
+)
+def test_runner_dispatches_pitr_backup_operations(
+    project_dir,
+    fake_registry,
+    kind,
+    service_name,
+    result,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = f"{kind}1"
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind(kind),
+        "test-project",
+        "production",
+        "api-client",
+        {},
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(op_id=op_id, kind=kind)
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        f"odooctl.services.pitr.{service_name}",
+        return_value=result,
+    ) as service:
+        assert worker.claim_and_run() is True
+
+    service.assert_called_once()
+    assert service.call_args.args[1] == "production"
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_pitr_restore_forwards_plan_identity(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "pitrrestore1"
+    plan_id = "production_pitr_plan_123"
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.PITR_RESTORE,
+        "test-project",
+        "production",
+        "api-client",
+        {"plan_id": plan_id},
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="pitr_restore",
+            roles=["admin"],
+            params={"plan_id": plan_id},
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.pitr.execute_restore",
+        return_value=SimpleNamespace(
+            restore_id="production_pitr_restore_123",
+            new_database="test_prod_pitr_123",
+            target_time="2026-07-30T10:00:00Z",
+            recovered_lsn="0/5000000",
+        ),
+    ) as restore:
+        assert worker.claim_and_run() is True
+
+    restore.assert_called_once()
+    assert restore.call_args.args[1:] == ("production", plan_id)
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_pitr_cutover_forwards_typed_confirmation(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "pitrcutover1"
+    params = {
+        "restore_id": "production_pitr_restore_123",
+        "confirm_environment": "production",
+        "confirm_database": "test_prod",
+        "accept_database_only": True,
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.PITR_CUTOVER,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="pitr_cutover",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.pitr.cutover_restore",
+        return_value=SimpleNamespace(
+            restore_id=params["restore_id"],
+            database="test_prod",
+            filestore_consistency="not_included",
+        ),
+    ) as cutover:
+        assert worker.claim_and_run() is True
+
+    assert cutover.call_args.args[1:] == (
+        "production",
+        params["restore_id"],
+    )
+    assert cutover.call_args.kwargs == {
+        "confirm_environment": "production",
+        "confirm_database": "test_prod",
+        "accept_database_only": True,
+    }
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+
+
+def test_runner_filestore_verify_dispatches_and_records_result(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "filestoreverify1"
+    migration_id = "production_filestore_123"
+    params = {
+        "action": "verify",
+        "migration_id": migration_id,
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.FILESTORE_MIGRATE,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="filestore_migrate",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.filestore_storage.verify_migration",
+        return_value=SimpleNamespace(
+            migration_id=migration_id,
+            inventory_sha256="a" * 64,
+            object_count=2,
+            total_size=42,
+        ),
+    ) as verify:
+        assert worker.claim_and_run() is True
+
+    verify.assert_called_once()
+    assert verify.call_args.args[1:] == (
+        "production",
+        migration_id,
+    )
+    assert store.load(op_id).status == OperationStatus.SUCCEEDED
+    event = next(
+        item
+        for item in store.load_events(op_id)
+        if item.phase == "filestore_verify"
+    )
+    assert event.data["inventory_sha256"] == "a" * 64
+
+
+def test_runner_rejects_absolute_filestore_download_if_queue_is_forged(
+    project_dir,
+    fake_registry,
+):
+    from odooctl.operations.models import (
+        Operation,
+        OperationKind,
+        OperationStatus,
+    )
+    from odooctl.operations.store import OperationStore
+    from odooctl.runner.worker import RunnerWorker
+
+    op_id = "filestorepath1"
+    params = {
+        "action": "download",
+        "migration_id": "production_filestore_123",
+        "destination": "/tmp/outside-project",
+    }
+    store = OperationStore(project_dir / ".odooctl")
+    operation = Operation.create(
+        OperationKind.FILESTORE_MIGRATE,
+        "test-project",
+        "production",
+        "api-client",
+        params,
+    )
+    operation.id = op_id
+    store.save(operation)
+    OperationQueue(project_dir / ".odooctl").enqueue(
+        _make_entry(
+            op_id=op_id,
+            kind="filestore_migrate",
+            roles=["admin"],
+            params=params,
+        )
+    )
+
+    worker = RunnerWorker(registry=fake_registry, api_key=TEST_KEY)
+    with patch(
+        "odooctl.services.filestore_storage.download_migration",
+    ) as download:
+        assert worker.claim_and_run() is True
+
+    download.assert_not_called()
+    failed = store.load(op_id)
+    assert failed.status == OperationStatus.FAILED
+    assert "project-relative" in (failed.error or "")
 
 
 def test_runner_rejects_protected_destructive_op_with_operator_role(tmp_path):

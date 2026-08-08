@@ -45,10 +45,16 @@ def redact(
         redacted = redacted.replace(value, "***REDACTED***")
     return redacted
 
-def run(args: Sequence[str], *, check: bool = True, cwd: str | None = None, env: Mapping[str, str] | None = None, stream: bool = False) -> CommandResult:
-    merged_env = os.environ.copy()
-    if env:
-        merged_env.update(env)
+def run(
+    args: Sequence[str],
+    *,
+    check: bool = True,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+    unset_env: Iterable[str] = (),
+    stream: bool = False,
+) -> CommandResult:
+    merged_env = _merged_env(env, unset_env=unset_env)
     if stream:
         proc = subprocess.Popen(list(args), cwd=cwd, env=merged_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output = []
@@ -66,8 +72,14 @@ def run(args: Sequence[str], *, check: bool = True, cwd: str | None = None, env:
         raise CommandError(result, merged_env)
     return result
 
-def _merged_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+def _merged_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    unset_env: Iterable[str] = (),
+) -> dict[str, str]:
     merged_env = os.environ.copy()
+    for name in unset_env:
+        merged_env.pop(name, None)
     if env:
         merged_env.update(env)
     return merged_env

@@ -19,6 +19,14 @@ class OperationKind(str, Enum):
     ROLLBACK = "rollback"
     PROMOTE = "promote"
     DR_DRILL = "dr_drill"
+    SNAPSHOT_CREATE = "snapshot_create"
+    SNAPSHOT_RECONCILE = "snapshot_reconcile"
+    SNAPSHOT_RESTORE = "snapshot_restore"
+    PITR_BASE_CREATE = "pitr_base_create"
+    PITR_RESTORE = "pitr_restore"
+    PITR_CUTOVER = "pitr_cutover"
+    PITR_RECONCILE = "pitr_reconcile"
+    FILESTORE_MIGRATE = "filestore_migrate"
     MIGRATE_REHEARSAL = "migrate_rehearsal"
 
 

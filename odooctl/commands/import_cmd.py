@@ -166,11 +166,11 @@ def run(
         except Exception as exc:
             warn(f"Doctor: check failed with error: {exc}")
 
-    # Run a safety backup — the first managed snapshot after adoption.
+    # Run the first portable database + filestore backup after adoption.
     if not skip_backup:
         try:
             backup_id = backup_cmd.execute("production", str(config_path))
             success(f"Safety backup created: {backup_id}")
         except Exception as exc:
             warn(f"Backup after adoption failed: {exc}")
-            warn("Run 'odooctl backup production' manually to create a safety snapshot.")
+            warn("Run 'odooctl backup production' manually to create a safety backup.")
