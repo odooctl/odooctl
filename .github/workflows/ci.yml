@@ -9,16 +9,24 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pinned so the resolver itself cannot drift between runs. Bump deliberately.
+  UV_VERSION: '0.12.3'
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v9
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
-      - run: pip install ruff
-      - run: ruff check odooctl tests
+          enable-cache: true
+      - name: Install locked dev environment
+        run: uv sync --frozen --extra dev
+      - name: Ruff
+        run: uv run --frozen ruff check odooctl tests
 
   test:
     runs-on: ubuntu-latest
@@ -28,32 +36,37 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v9
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
-      - name: Install
-        run: |
-          python -m pip install -U pip
-          pip install -e '.[dev,api]' pytest-cov
+          enable-cache: true
+      - name: Install locked test environment
+        run: uv sync --frozen --extra dev --extra api
       - name: Run unit tests
-        run: pytest -q --cov=odooctl --cov-report=term-missing --cov-fail-under=80
+        run: uv run --frozen pytest -q --cov=odooctl --cov-report=term-missing --cov-fail-under=80
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v9
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
+          enable-cache: true
+      - name: Install locked build environment
+        run: uv sync --frozen --extra dev
       - name: Build sdist and wheel
-        run: |
-          pip install build
-          python -m build
+        run: uv run --frozen python -m build
+      # Deliberately unlocked: this resolves the wheel's own metadata against
+      # live PyPI, which is what an end user installing odooctl actually gets.
       - name: Smoke-install wheel
         run: |
-          pip install dist/*.whl
-          odooctl --version
-          odooctl --help > /dev/null
+          uv venv /tmp/smoke
+          VIRTUAL_ENV=/tmp/smoke uv pip install dist/*.whl
+          /tmp/smoke/bin/odooctl --version
+          /tmp/smoke/bin/odooctl --help > /dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: dist

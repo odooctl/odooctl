@@ -149,11 +149,14 @@ The host also needs Docker Engine with the Compose plugin and `tar`. With the re
 ## Development
 
 ```bash
-uv venv
-uv pip install -e '.[dev]'
-pytest -q                              # unit suite
-pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker)
+uv sync --frozen --extra dev --extra api           # exactly what CI installs
+uv run --frozen pytest -q                          # unit suite
+uv run --frozen ruff check odooctl tests           # lint
+uv run --frozen pytest -m integration tests/integration  # opt-in real-Odoo matrix (needs Docker)
 ```
+
+`uv.lock` is authoritative — `--frozen` keeps your environment identical to
+CI's. See [CONTRIBUTING.md](CONTRIBUTING.md) for changing dependencies.
 
 ## Safety defaults
 

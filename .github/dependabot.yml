@@ -1,6 +1,9 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # `uv` (not `pip`) so refreshes land in uv.lock — the file CI now installs
+  # from. A pip-ecosystem entry would only touch pyproject.toml bounds and
+  # leave the lock, and therefore CI, unchanged.
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly

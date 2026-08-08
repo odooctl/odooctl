@@ -44,31 +44,53 @@ management.
 ```bash
 git clone https://github.com/odooctl/odooctl.git
 cd odooctl
-uv venv
-uv pip install -e '.[dev]'
+uv sync --frozen --extra dev --extra api
 ```
+
+`--frozen` installs exactly what `uv.lock` pins, which is the same
+environment CI builds. Do not use `uv pip install -e '.[dev]'` — it
+re-resolves from the lower bounds in `pyproject.toml` and can give you a
+dependency set that CI never tests.
 
 Optional extras:
 
-- `uv pip install -e '.[dev,s3]'` to work on the real S3 adapter.
+- Add `--extra s3` to work on the real S3 adapter.
 
 Python 3.11 or newer is required.
 
 ## Tests, lint, and build
 
-Run the same checks CI expects before opening a pull request:
+Run the same checks CI expects before opening a pull request. These are
+the exact commands in `.github/workflows/ci.yml`:
 
 ```bash
-uv run pytest -q                                    # unit tests
-ODOO_DB_PASSWORD=odoo uv run pytest -q              # same suite with a secret env var set
-uv run ruff check .                                 # lint
-uv run python -m build                              # sdist + wheel build
+uv run --frozen pytest -q --cov=odooctl --cov-fail-under=80   # unit tests
+ODOO_DB_PASSWORD=odoo uv run --frozen pytest -q               # same suite with a secret env var set
+uv run --frozen ruff check odooctl tests                      # lint
+uv run --frozen python -m build                               # sdist + wheel build
 ```
+
+Keep the `--frozen` flag. Without it `uv run` may silently update
+`uv.lock` before running, so a green local check would no longer prove the
+locked environment is green.
+
+### Changing dependencies
+
+`uv.lock` is authoritative. When you add or bump a dependency, edit
+`pyproject.toml`, run `uv lock`, and commit the resulting `uv.lock` in the
+same pull request. Routine refreshes arrive as Dependabot pull requests so
+the lock changes are reviewed rather than applied implicitly during a CI
+run.
+
+Ruff is deliberately constrained to the `0.15.x` series. A new Ruff minor
+release enables new rules and can fail an otherwise unchanged commit;
+moving to `0.16` is a separate, intentional pull request that also fixes
+the findings it introduces.
 
 Notes:
 
 - The default `pytest` configuration excludes the `integration` marker.
-- Run integration tests explicitly with `uv run pytest -q -m integration`.
+- Run integration tests explicitly with `uv run --frozen pytest -q -m integration`.
   They require external services (Docker, a running Odoo stack) and are not
   part of the default PR gate.
 - The Docker integration fixture lives under
@@ -98,8 +120,8 @@ Each pull request should:
 - Include tests for new behavior or regressions you are fixing.
 - Update docs under `docs/` and `examples/` when user-visible behavior,
   configuration, or commands change.
-- Pass `uv run pytest -q`, `uv run ruff check .`, and
-  `uv run python -m build` locally.
+- Pass `uv run --frozen pytest -q`, `uv run --frozen ruff check odooctl tests`,
+  and `uv run --frozen python -m build` locally.
 - Note any deliberate skips (for example, integration runs that require a
   live Docker/Odoo fixture you could not reproduce locally).
 
