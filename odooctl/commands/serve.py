@@ -11,7 +11,23 @@ custom directory (useful during SPA development). The API routes under
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+
+
+_ALLOWED_HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
+
+def validate_allowed_hosts(hosts: list[str]) -> list[str]:
+    """Validate explicit reverse-proxy host names without accepting wildcards."""
+    validated: list[str] = []
+    for host in hosts:
+        if not _ALLOWED_HOST_RE.fullmatch(host) or ".." in host or "*" in host:
+            raise ValueError(
+                f"Invalid allowed host {host!r}; use an exact hostname or IP address, never a wildcard."
+            )
+        validated.append(host)
+    return validated
 
 
 def _bundled_dist() -> Path:
@@ -25,6 +41,7 @@ def run(
     api_key: str | None = None,
     static_dir: Path | None = None,
     reload: bool = False,
+    allowed_hosts: list[str] | None = None,
 ) -> None:
     try:
         import uvicorn  # noqa: F401
@@ -50,5 +67,14 @@ def run(
 
     from odooctl.api.app import create_app
 
-    app = create_app(api_key=api_key, static_dir=static_dir)
+    try:
+        extra_allowed_hosts = validate_allowed_hosts(allowed_hosts or [])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    app = create_app(
+        api_key=api_key,
+        static_dir=static_dir,
+        extra_allowed_hosts=extra_allowed_hosts,
+    )
     uvicorn.run(app, host=host, port=port, reload=reload)

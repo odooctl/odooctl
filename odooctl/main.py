@@ -319,13 +319,26 @@ def serve(
     api_key: str | None = typer.Option(None, "--api-key", envvar="ODOOCTL_API_KEY", help="HMAC key for bearer tokens."),
     static_dir: Path | None = typer.Option(None, "--static-dir", help="Directory of pre-built SPA assets to serve at /."),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev only)."),
+    allowed_host: list[str] = typer.Option(
+        [],
+        "--allowed-host",
+        help="Exact Host header allowed through a TLS reverse proxy (repeatable; no wildcards).",
+    ),
 ) -> None:
     """Start the local API server (requires odooctl[api] extras).
 
     Binds to 127.0.0.1 by default. Pass --api-key or set ODOOCTL_API_KEY.
-    Optionally serve a static SPA from --static-dir at /.
+    For a TLS reverse proxy, explicitly repeat --allowed-host for every public
+    hostname. Optionally serve a static SPA from --static-dir at /.
     """
-    serve_cmd.run(host=host, port=port, api_key=api_key, static_dir=static_dir, reload=reload)
+    serve_cmd.run(
+        host=host,
+        port=port,
+        api_key=api_key,
+        static_dir=static_dir,
+        reload=reload,
+        allowed_hosts=allowed_host,
+    )
 
 
 @app.command()

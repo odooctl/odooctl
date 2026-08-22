@@ -127,6 +127,19 @@ def test_invalid_token_returns_401(client):
     assert resp.status_code == 401
 
 
+def test_extra_allowed_host_is_opt_in_only(fake_registry):
+    from odooctl.api.app import create_app
+
+    app = create_app(
+        api_key=TEST_KEY,
+        registry_loader=lambda: fake_registry,
+        extra_allowed_hosts=["ui.example.test"],
+    )
+    middleware = next(item for item in app.user_middleware if item.cls.__name__ == "TrustedHostMiddleware")
+
+    assert middleware.kwargs["allowed_hosts"] == ["127.0.0.1", "localhost", "ui.example.test"]
+
+
 def test_expired_token_returns_401(client):
     token = tokens.mint(
         TEST_KEY,

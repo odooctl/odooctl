@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database before renaming it, including sessions retained briefly by Odoo 19
   native neutralization.
 
+### Changed
+
+- `odooctl serve` remains loopback-only by default. TLS reverse-proxy
+  deployments can now opt in to exact, non-wildcard `--allowed-host` values
+  instead of relying on an undocumented runtime allowlist workaround.
+
 ## [0.3.0b1] - 2026-08-08
 
 ### Changed
