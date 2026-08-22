@@ -30,6 +30,14 @@ jobs:
         run: uv run --frozen pytest -q
       - name: Build
         run: uv run --frozen python -m build
+      - name: Build release documentation from this exact tag
+        run: |
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
+            --repo-root . \
+            --site-dir site \
+            --versions-file docs/versions.yml \
+            --assets-dir docs/_versioning
+          test -f "site/docs/${GITHUB_REF_NAME#v}/index.html"
       # Deliberately unlocked: verifies the artifact we are about to publish
       # installs cleanly from live PyPI, exactly as a user would get it.
       - name: Smoke-install wheel
@@ -56,10 +64,45 @@ jobs:
           path: dist/
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Classify release channel with PEP 440
+        id: release_type
+        run: |
+          prerelease="$(python -c 'from packaging.version import Version; import os; print(str(Version(os.environ["GITHUB_REF_NAME"][1:]).is_prerelease).lower())')"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, 'b') }}
-          make_latest: ${{ contains(github.ref_name, 'b') && 'false' || 'true' }}
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          make_latest: ${{ steps.release_type.outputs.prerelease == 'true' && 'false' || 'true' }}
+
+  publish-docs:
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: odooctl-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Publish retained documentation including this release
+        run: |
+          pip install mkdocs-material
+          python scripts/build_versioned_docs.py \
+            --repo-root . \
+            --site-dir site \
+            --versions-file docs/versions.yml \
+            --assets-dir docs/_versioning
+          cp landing/index.html site/index.html
+      - name: Deploy to odooctl/odooctl.github.io
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          external_repository: odooctl/odooctl.github.io
+          publish_branch: main
+          publish_dir: site

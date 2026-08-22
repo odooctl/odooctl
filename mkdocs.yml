@@ -55,6 +55,7 @@ nav:
       - Doctor: doctor.md
       - Disaster recovery: disaster-recovery.md
       - Odoo versions: odoo-versions.md
+      - Documentation versions: documentation-versions.md
       - Migration & upgrades: migration.md
   - Platform:
       - Web UI: web-ui.md

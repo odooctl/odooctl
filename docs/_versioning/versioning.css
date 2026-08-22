@@ -1,0 +1,19 @@
+.odooctl-version-banner {
+  align-items: center;
+  background: #17141f;
+  border-bottom: 1px solid #3b2d58;
+  color: #ededed;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.65rem;
+  gap: 0.5rem 1rem;
+  justify-content: center;
+  line-height: 1.5;
+  padding: 0.45rem 1rem;
+}
+.odooctl-version-banner strong { color: #c4b5fd; }
+.odooctl-version-picker { align-items: center; display: inline-flex; gap: 0.35rem; }
+.odooctl-version-picker select {
+  background: #0a0a0a; border: 1px solid #4c3b71; border-radius: 4px;
+  color: #ededed; font: inherit; padding: 0.15rem 0.3rem;
+}

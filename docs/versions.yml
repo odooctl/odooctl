@@ -1,0 +1,28 @@
+# Immutable documentation snapshots are built from these refs. Do not move a
+# ref after publishing it: correcting an old snapshot requires a documented
+# patch release with a new version instead.
+versions:
+  - version: 0.2.0
+    channel: stable
+    ref: v0.2.0
+  - version: 0.3.0b1
+    channel: beta
+    ref: v0.3.0b1
+
+# Channel aliases are full copies in the published tree, not redirects. That
+# keeps /docs/stable/ and /docs/beta/ usable by offline mirrors and makes the
+# target explicit in versions.json.
+aliases:
+  stable: 0.2.0
+  beta: 0.3.0b1
+
+# The publisher always builds this checkout independently of immutable refs.
+development:
+  channel: dev
+
+# Retain every supported stable minor and every advertised prerelease. When a
+# version leaves support, replace its retained tree with an end-of-support
+# tombstone that points to the supported version; do not delete its URL.
+retention: |
+  Retain every supported stable minor and advertised prerelease. After support
+  ends, retain an end-of-support tombstone at the immutable URL.
