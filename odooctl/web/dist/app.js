@@ -513,7 +513,9 @@
                 (isProtected ? '<span class="alert warning" style="display:inline-block;margin-top:.5rem">Protected environment: this will overwrite ' + esc(target) + '.</span>' :
                     'This will overwrite data in <strong>' + esc(target) + '</strong>.');
             confirmAndRun(msg, keyword, function () {
-                enqueueOp(project, { kind: 'clone', environment: sourceEnv, params: { target: target, sanitize: sanitize } });
+                // The operation environment is always the environment the
+                // runner will mutate.  Clone's source belongs in params.
+                enqueueOp(project, { kind: 'clone', environment: target, params: { source: sourceEnv, sanitize: sanitize } });
             });
         });
     }

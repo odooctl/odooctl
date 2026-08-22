@@ -108,6 +108,16 @@ def baseline_sql(env: EnvironmentConfig, config: OdooCtlConfig) -> list[str]:
         "UPDATE ir_config_parameter SET value = '' "
         "WHERE key ILIKE '%api_key%' OR key ILIKE '%secret%' OR key ILIKE '%token%' OR key ILIKE '%password%';"
     )
+    # ``database.secret`` is Odoo's own CSRF/session signing key.  The broad
+    # credential scrub above intentionally removes the production value, but
+    # leaving it blank makes every staging login fail while rendering its CSRF
+    # token.  Rotate it to a fresh per-clone value instead of copying the
+    # production secret or treating it as an external integration credential.
+    stmts.append(
+        "INSERT INTO ir_config_parameter (key, value) "
+        "VALUES ('database.secret', gen_random_uuid()::text) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
+    )
     stmts.append(
         "INSERT INTO ir_config_parameter (key, value) "
         "VALUES ('database.is_neutralized', 'True') "
@@ -295,6 +305,13 @@ def verification_checks(
             "database marked neutralized",
             "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ir_config_parameter "
             "WHERE key = 'database.is_neutralized' AND lower(value) = 'true')",
+        )
+    )
+    checks.append(
+        _assert_no_rows(
+            "database secret rotated",
+            "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ir_config_parameter "
+            "WHERE key = 'database.secret' AND length(value) >= 32)",
         )
     )
     return checks

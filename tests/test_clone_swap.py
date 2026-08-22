@@ -24,6 +24,10 @@ def test_swap_temp_database_terminates_drops_and_renames_target():
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'odoo_staging' AND pid <> pg_backend_pid();",
         ),
         ("postgres", 'DROP DATABASE IF EXISTS "odoo_staging";'),
+        (
+            "postgres",
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'odoo_staging_incoming' AND pid <> pg_backend_pid();",
+        ),
         ("postgres", 'ALTER DATABASE "odoo_staging_incoming" RENAME TO "odoo_staging";'),
     ]
 
@@ -63,7 +67,7 @@ def test_swap_allows_unprotected_target_per_config_policy():
         target_env_name="staging",
         is_protected_fn=lambda name: name == "production",
     )
-    assert len(pg.calls) == 3
+    assert len(pg.calls) == 4
 
 
 def test_database_quoting_handles_special_characters():
@@ -81,13 +85,18 @@ class ExistsAwarePostgres:
         self.databases = set(existing)
         self.renames: list[tuple[str, str]] = []
         self.drops: list[str] = []
+        self.terminations: list[str] = []
         self.fail_promote = False
 
     def database_exists(self, name):
         return name in self.databases
 
     def psql(self, db_name, sql):
-        if "RENAME TO" in sql:
+        if "pg_terminate_backend" in sql:
+            import re
+            name = re.search(r"datname = '(.+?)'", sql).group(1)
+            self.terminations.append(name)
+        elif "RENAME TO" in sql:
             # ALTER DATABASE "old" RENAME TO "new";
             import re
             m = re.search(r'ALTER DATABASE "(.+?)" RENAME TO "(.+?)"', sql)
@@ -111,6 +120,7 @@ def test_swap_rename_aside_keeps_target_present_throughout():
     assert "odoo_staging" in pg.databases
     assert "odoo_staging__old_swap" not in pg.databases
     assert "odoo_staging_incoming" not in pg.databases
+    assert "odoo_staging_incoming" in pg.terminations
 
 
 def test_swap_restores_original_when_promotion_rename_fails():
