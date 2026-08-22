@@ -725,6 +725,10 @@ def swap_temp_database(
         # the data survives under ``temp_db`` and is recoverable.
         terminate_connections(pg, target_db, maintenance_db=maintenance_db)
         drop_database(pg, target_db, maintenance_db=maintenance_db)
+        # Native Odoo neutralization can keep a worker connection attached to
+        # the prepared database briefly after its CLI process exits. PostgreSQL
+        # refuses ALTER DATABASE ... RENAME while any such session remains.
+        terminate_connections(pg, temp_db, maintenance_db=maintenance_db)
         rename_database(pg, temp_db, target_db, maintenance_db=maintenance_db)
         return
 
@@ -738,6 +742,7 @@ def swap_temp_database(
         terminate_connections(pg, target_db, maintenance_db=maintenance_db)
         rename_database(pg, target_db, aside_db, maintenance_db=maintenance_db)
     try:
+        terminate_connections(pg, temp_db, maintenance_db=maintenance_db)
         rename_database(pg, temp_db, target_db, maintenance_db=maintenance_db)
     except Exception:
         # Promotion failed: restore the original so the target is never absent.

@@ -232,6 +232,15 @@ def enqueue_operation(
     enforce_project_scope(request, project)
     ctx = _load_ctx(request, project)
 
+    if body.kind == "clone" and "target" in body.params:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Clone operation.environment must be the target environment; "
+                "put the source environment in params.source"
+            ),
+        )
+
     if (
         body.kind
         in {"snapshot_create", "snapshot_reconcile", "snapshot_restore"}

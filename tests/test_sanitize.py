@@ -116,6 +116,30 @@ def test_default_sanitization_scrubs_webhooks_and_environment_secrets(tmp_path: 
     assert "token" in sql
 
 
+def test_sanitization_rotates_odoo_database_secret_after_credential_scrub(tmp_path: Path):
+    cfg = _config(tmp_path)
+    stmts = default_sql(cfg.env("staging"), cfg)
+    scrub_index = next(
+        i for i, sql in enumerate(stmts)
+        if "key ILIKE '%api_key%'" in sql
+    )
+    rotate_index = next(
+        i for i, sql in enumerate(stmts)
+        if "VALUES ('database.secret', gen_random_uuid()::text)" in sql
+    )
+
+    assert rotate_index > scrub_index
+    assert "ON CONFLICT (key) DO UPDATE" in stmts[rotate_index]
+
+
+def test_verification_requires_nonempty_database_secret(tmp_path: Path):
+    cfg = _config(tmp_path)
+    checks = dict(verification_checks("normal", cfg.env("staging"), cfg))
+
+    assert "database secret rotated" in checks
+    assert "length(value) >= 32" in checks["database secret rotated"]
+
+
 def test_base_url_is_rewritten_and_frozen(tmp_path: Path):
     cfg = _config(tmp_path)
     stmts = default_sql(cfg.env("staging"), cfg)

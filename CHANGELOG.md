@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Web UI clone operations now identify the selected target as the operation
+  environment and pass the current environment as `params.source`; malformed
+  legacy source/target payloads are rejected before entering the queue.
+- Staging sanitization rotates Odoo's required `database.secret` after broad
+  credential scrubbing, preserving login/CSRF functionality without retaining
+  the production signing secret.
+- Atomic database promotion terminates connections to the prepared temporary
+  database before renaming it, including sessions retained briefly by Odoo 19
+  native neutralization.
+
 ## [0.3.0b1] - 2026-08-08
 
 ### Changed

@@ -757,6 +757,21 @@ def test_filestore_api_enqueues_explicit_cutover(
     assert response.json()["kind"] == "filestore_migrate"
 
 
+def test_clone_rejects_legacy_reversed_source_target_contract(client):
+    response = client.post(
+        "/projects/test-project/operations",
+        headers={"Authorization": f"Bearer {_mint_operator()}"},
+        json={
+            "kind": "clone",
+            "environment": "production",
+            "params": {"target": "staging", "sanitize": True},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "environment must be the target" in response.json()["detail"]
+
+
 def test_filestore_api_rejects_project_without_migration_backend(
     client,
 ):

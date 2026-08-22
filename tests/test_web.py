@@ -187,6 +187,12 @@ def test_app_js_has_clone_operation():
     assert "clone" in content
 
 
+def test_clone_request_targets_selected_environment_and_names_source():
+    content = (_DIST / "app.js").read_text()
+    assert "kind: 'clone', environment: target, params: { source: sourceEnv" in content
+    assert "kind: 'clone', environment: sourceEnv, params: { target: target" not in content
+
+
 def test_app_js_has_promote_operation():
     content = (_DIST / "app.js").read_text()
     assert "promote" in content
