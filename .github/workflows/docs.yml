@@ -3,9 +3,9 @@ name: Docs
 on:
   push:
     branches: [master]
-    paths: ['docs/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-version-patches/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', 'scripts/check_documented_commands.py', '.github/workflows/docs.yml']
   pull_request:
-    paths: ['docs/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-version-patches/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', 'scripts/check_documented_commands.py', '.github/workflows/docs.yml']
   workflow_dispatch:
 
 permissions:
