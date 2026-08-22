@@ -52,7 +52,8 @@ from disk on each request.
 pip install odooctl[api]
 
 # Start server (auto-serves bundled SPA at /)
-ODOOCTL_API_KEY=mysecret odooctl serve
+export ODOOCTL_API_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+odooctl serve
 
 # Override with a custom dist directory (for local development)
 ODOOCTL_API_KEY=mysecret odooctl serve --static-dir path/to/custom/dist
@@ -61,11 +62,46 @@ ODOOCTL_API_KEY=mysecret odooctl serve --static-dir path/to/custom/dist
 ODOOCTL_API_KEY=mysecret odooctl serve --host 127.0.0.1 --port 9000
 ```
 
-> **Warning:** do not bind to a non-loopback address (e.g. `--host 0.0.0.0`).
-> The server speaks plain HTTP and is designed for localhost-only operation;
-> exposing it puts bearer tokens on the wire unencrypted and lets anyone with
-> a token enqueue privileged operations. Use an SSH tunnel (or an
-> authenticating TLS reverse proxy plus firewall rules) for remote access.
+> **Warning:** the server speaks plain HTTP. Do not expose `--host 0.0.0.0`
+> directly: it puts bearer tokens on the wire unencrypted and lets anyone with
+> a token enqueue privileged operations. The default is loopback-only.
+
+### Remote access
+
+For occasional access, keep the server bound to loopback and tunnel it:
+
+```bash
+ssh -L 8787:127.0.0.1:8787 operator@odoo-host
+```
+
+Then open `http://127.0.0.1:8787/` locally. For a persistent deployment,
+place a TLS-terminating, authenticating reverse proxy in front of the service,
+restrict its firewall scope to the proxy/Tailscale network, and name every
+public host explicitly:
+
+```bash
+odooctl serve --host 0.0.0.0 --port 8787 \
+  --allowed-host odooctl.ops.example.com
+```
+
+`--allowed-host` is repeatable but accepts exact hostnames/IP addresses only;
+wildcards are rejected. Configure the proxy to forward the matching `Host`
+header, terminate TLS, require its own authentication where appropriate, and
+keep `ODOOCTL_API_KEY` in a root/service-account-readable environment file
+(mode `0600`), never in the proxy config, command line, or repository.
+
+For systemd, run `odooctl serve` as an unprivileged dedicated account with an
+`EnvironmentFile=` containing the API key, `Restart=on-failure`, and a
+firewall rule allowing only the reverse proxy or Tailscale interface. Run the
+privileged `odooctl runner` separately; it alone needs Docker/filestore access.
+
+### Troubleshooting
+
+| Symptom | Cause and resolution |
+| --- | --- |
+| `Invalid host header` | The request host is not loopback or an explicit `--allowed-host`. Correct the reverse-proxy `Host` header and add only the exact public hostname. |
+| `401 Unauthorized` | The UI token is absent, expired, malformed, or signed by a different `ODOOCTL_API_KEY`. Mint a new token with the server's key and paste it into the UI. |
+| Dashboard does not show Odoo | Port `8787` is the odooctl dashboard/API. Odoo environment ports (often `8069` or a reverse-proxy port) are separate and are not interchangeable. |
 
 Open `http://localhost:8787/` and paste an API token. Generate one with:
 

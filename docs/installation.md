@@ -3,33 +3,66 @@
 `odooctl` is packaged as a normal Python CLI. The recommended operator install is an
 isolated tool environment, not a checkout-specific virtualenv.
 
-## Recommended: pipx
+## Release channels
+
+Stable installs stay on the stable channel unless you explicitly request a
+prerelease. Do not use an unpinned beta in automation: pin the exact version
+and record it with the deployment or drill report.
+
+### Stable `0.2.0`
 
 ```bash
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
-pipx install odooctl
-odooctl --help
+pipx install 'odooctl==0.2.0'
+odooctl --version
 ```
 
-Upgrade later with:
+With uv instead:
 
 ```bash
-pipx upgrade odooctl
+uv tool install 'odooctl==0.2.0'
+odooctl --version
 ```
 
-## Alternative: uv tool
+### Explicit beta `0.3.0b1`
 
 ```bash
-uv tool install odooctl
-odooctl --help
+# pipx: replace an existing stable tool environment with the beta
+pipx install --force 'odooctl==0.3.0b1'
+
+# uv: replace an existing stable tool environment with the beta
+uv tool install --force 'odooctl==0.3.0b1'
+
+odooctl --version
 ```
 
-Upgrade later with:
+`0.3.0b1` is prerelease documentation. Commands and configuration can change
+before `0.3.0` final; consult the beta docs selector rather than assuming a
+stable command is unchanged.
+
+### Return from beta to stable
 
 ```bash
-uv tool upgrade odooctl
+pipx install --force 'odooctl==0.2.0'
+# or: uv tool install --force 'odooctl==0.2.0'
+odooctl --version
 ```
+
+For later stable maintenance upgrades, use `pipx upgrade odooctl` or
+`uv tool upgrade odooctl`; their normal resolver behavior does not select a
+prerelease unless you opt in.
+
+## Release tags and release checklist
+
+Release tags must be valid PEP 440 versions prefixed with `v`: for example,
+`v0.3.0`, `v0.3.0b1`, `v0.3.0a1`, or `v0.3.0rc1`. The release workflow parses
+the package version, rejects a tag mismatch, and treats every PEP 440
+prerelease as a prerelease GitHub release.
+
+Before publishing a release, verify the exact artifact with each installation
+command documented for its channel, run `odooctl --version`, and confirm the
+immutable documentation snapshot displays that same package version.
 
 ## Development install from a checkout
 

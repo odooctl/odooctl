@@ -1,6 +1,6 @@
 # Integration testing against real Odoo
 
-The unit suite (900+ tests) uses fakes for Docker, PostgreSQL, and Odoo. The
+The unit suite uses fakes for Docker, PostgreSQL, and Odoo. The
 integration harness in `tests/integration/` complements it by exercising the
 full operator lifecycle against disposable, real Odoo stacks built from the
 official images.
@@ -25,7 +25,9 @@ host.
 Per version: `validate`, `doctor --json`, `status --json`,
 `backup --verify` (manifest + checksums asserted on disk),
 `clone production staging` (sanitization asserted via SQL: crons and mail
-servers disabled in the cloned DB), `restore production --to staging`
+servers disabled, a rotated non-empty `database.secret`, and the
+CSRF-protected staging login form loads with normal cookies/redirects),
+`restore production --to staging`
 (temp-DB + swap path), and **API/runner parity**: an operation enqueued
 through the authenticated local API is executed by `odooctl runner --once`,
 which must exit 0 and mark the operation `succeeded` (regression for the
@@ -51,3 +53,5 @@ which must exit 0 and mark the operation `succeeded` (regression for the
    credentials that a naive clone would carry into staging — sanitization now
    deletes them).
 3. Update `docs/odoo-versions.md` with findings before claiming support.
+4. Record the exact odooctl package version and Git commit in
+   `docs/operations/integration-status.md`.

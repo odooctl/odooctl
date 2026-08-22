@@ -128,7 +128,7 @@ The server is localhost-only by design and speaks plain HTTP — do not bind it 
 
 ## How it compares
 
-Compared to **Odoo.sh**, odooctl is self-hosted and free: your server, your data, no per-worker pricing — with the same core workflow of environments, backups, staging builds, and upgrade testing. Compared to **doodba**, odooctl is not a project scaffolding framework; it manages the operational lifecycle (backup, clone, restore, promote, rehearse) of whatever compose project you already have — including one built with doodba. Compared to **hand-rolled compose scripts**, every destructive path here ships with tested safety rails: pre-deploy backups, restore-into-temp-then-swap, sanitization that is on by default, protected-environment confirmation, and secret redaction, backed by 700+ unit tests plus a real-Odoo integration suite.
+Compared to **Odoo.sh**, odooctl is self-hosted and free: your server, your data, no per-worker pricing — with the same core workflow of environments, backups, staging builds, and upgrade testing. Compared to **doodba**, odooctl is not a project scaffolding framework; it manages the operational lifecycle (backup, clone, restore, promote, rehearse) of whatever compose project you already have — including one built with doodba. Compared to **hand-rolled compose scripts**, every destructive path here ships with tested safety rails: pre-deploy backups, restore-into-temp-then-swap, sanitization that is on by default, protected-environment confirmation, and secret redaction, backed by a continuously growing unit suite plus a real-Odoo integration suite.
 
 ## Supported Odoo versions
 
@@ -136,15 +136,20 @@ Odoo **17, 18, and 19** (Community) are integration-tested: a disposable-stack h
 
 ## Install
 
-PyPI publication is coming soon — `pipx install odooctl` / `uv tool install odooctl` will work once released. Today, install from source:
+Install the stable release from PyPI:
 
 ```bash
-git clone https://github.com/odooctl/odooctl && cd odooctl
-pipx install .          # or: uv tool install .
-odooctl --help
+pipx install 'odooctl==0.2.0'
+# or: uv tool install 'odooctl==0.2.0'
+odooctl --version
 ```
 
-The host also needs Docker Engine with the Compose plugin and `tar`. With the recommended `execution_mode: docker`, PostgreSQL client tools run inside your DB container, so the host needs none. See [docs/installation.md](docs/installation.md).
+`0.3.0b1` is an explicit prerelease opt-in; it is never the ordinary upgrade
+path for a stable installation. The host also needs Docker Engine with the
+Compose plugin and `tar`. With the recommended `execution_mode: docker`,
+PostgreSQL client tools run inside your DB container, so the host needs none.
+See [docs/installation.md](docs/installation.md) for beta upgrade and rollback
+commands.
 
 ## Development
 

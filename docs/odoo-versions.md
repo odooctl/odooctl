@@ -2,16 +2,25 @@
 
 `odooctl` is version-aware where Odoo CLI behavior or Docker images differ, but it intentionally keeps configuration explicit instead of guessing too much from an image tag.
 
-## Supported baseline
+## Support matrix
 
-The current production-readiness validation used:
+Only cells recorded below are integration-tested support claims. A successful
+beta run never retroactively changes the guarantees for an earlier stable
+release. The matrix uses the official image tags and `postgres:16-alpine` in a
+disposable Docker Compose stack (`odoo` and `db` services).
 
-- Odoo image: `odoo:19.0`
-- Odoo runtime version: `19.0-20260513`
-- PostgreSQL image: `postgres:17`
-- Docker Compose stack with services named `odoo` and `db`
+| odooctl release | Odoo major / image | PostgreSQL | Tested operations | Date | Known limitations |
+| --- | --- | --- | --- | --- | --- |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 17.0 / `odoo:17.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 18.0 / `odoo:18.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 19.0 / `odoo:19.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 17.0 / `odoo:17.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 18.0 / `odoo:18.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 19.0 / `odoo:19.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
 
-The same Docker-native execution model is intended for recent official Odoo images, provided your compose service has PostgreSQL client tools available in the DB container and the Odoo service can run the `odoo` CLI.
+The `0.3.0b1` support gate verifies `/web/health` as the machine endpoint,
+then separately loads the cookie/redirect-aware staging login form and checks
+its CSRF token after sanitization.
 
 ## Config fields to review per version
 
@@ -49,7 +58,9 @@ This avoids relying on official-image entrypoint environment handling, which is 
 
 ### Health checks
 
-Odoo login endpoints commonly return HTTP `302` redirects. `odooctl` treats 2xx and 3xx responses as healthy.
+`odooctl` requires a 2xx response. Redirects are unhealthy because they may
+hide an error page or route to the wrong database. Use `/web/health` (the
+default on Odoo 15+) as the machine health endpoint.
 
 For local or shared-stack multi-database setups, use:
 
@@ -75,4 +86,8 @@ When moving a project to a new Odoo major version:
 
 ## Integration coverage
 
-The checked-in experiment under `experiments/odoo19-community-staging/` is the reference fixture for Odoo 19 Community Docker behavior. Use it as the model for service names, Docker-native DB access, filestore named volumes, and local multi-DB `db_selector` health checks.
+Browser login checks are not health checks: they use cookies and normal redirect
+handling only as an integration assertion that Odoo can render the login form.
+The checked-in integration harness is the reference fixture for service names,
+Docker-native DB access, filestore named volumes, and local multi-DB
+`db_selector` health checks.
