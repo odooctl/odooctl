@@ -1,7 +1,7 @@
 # PR 29 readiness fixes
 
 Date: 2026-08-23
-Status: IN PROGRESS
+Status: COMPLETE
 Branch: docs/versioned-documentation
 
 ## Why this work exists
