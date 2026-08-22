@@ -7,7 +7,6 @@ from typer.testing import CliRunner
 from odooctl.commands.serve import validate_allowed_hosts
 from odooctl.main import app
 
-
 runner = CliRunner()
 
 
