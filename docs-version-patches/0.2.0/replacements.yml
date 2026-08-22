@@ -1,0 +1,118 @@
+# Correct installation guidance published before the 0.2.0 PyPI release.
+- path: index.md
+  old: |-
+    ## Install
+
+    PyPI publication is coming soon — `pipx install odooctl` / `uv tool install odooctl` will work once released. Today, install from source:
+
+    ```bash
+    git clone https://github.com/odooctl/odooctl && cd odooctl
+    pipx install .          # or: uv tool install .
+    odooctl --help
+    ```
+  new: |-
+    ## Install
+
+    Install this stable snapshot from PyPI and keep the package version aligned with these docs:
+
+    ```bash
+    pipx install 'odooctl==0.2.0'
+    # or: uv tool install 'odooctl==0.2.0'
+    odooctl --version
+    ```
+
+- path: getting-started.md
+  old: |-
+    PyPI publication is coming soon; until then, install from a source checkout:
+
+    ```bash
+    git clone https://github.com/odooctl/odooctl && cd odooctl
+    pipx install .
+    # or
+    uv tool install .
+    ```
+
+    Once published, `pipx install odooctl` / `uv tool install odooctl` will work directly.
+  new: |-
+    Install this stable snapshot from PyPI:
+
+    ```bash
+    pipx install 'odooctl==0.2.0'
+    # or: uv tool install 'odooctl==0.2.0'
+    odooctl --version
+    ```
+
+- path: getting-started.md
+  old: |-
+    pipx install 'odooctl[s3]'
+    # or
+    uv tool install 'odooctl[s3]'
+  new: |-
+    pipx install 'odooctl[s3]==0.2.0'
+    # or: uv tool install 'odooctl[s3]==0.2.0'
+
+- path: installation.md
+  old: |-
+    ## Recommended: pipx
+
+    ```bash
+    python3 -m pip install --user pipx
+    python3 -m pipx ensurepath
+    pipx install odooctl
+    odooctl --help
+    ```
+
+    Upgrade later with:
+
+    ```bash
+    pipx upgrade odooctl
+    ```
+
+    ## Alternative: uv tool
+
+    ```bash
+    uv tool install odooctl
+    odooctl --help
+    ```
+
+    Upgrade later with:
+
+    ```bash
+    uv tool upgrade odooctl
+    ```
+  new: |-
+    ## Stable 0.2.0
+
+    ```bash
+    python3 -m pip install --user pipx
+    python3 -m pipx ensurepath
+    pipx install 'odooctl==0.2.0'
+    # or: uv tool install 'odooctl==0.2.0'
+    odooctl --version
+    ```
+
+    Keep this exact pin while using the 0.2.0 documentation. If you upgrade to
+    a later stable release, switch to that release's documentation snapshot.
+
+- path: installation.md
+  old: |-
+    pipx inject odooctl 'odooctl[s3]'
+    # or for uv tool installs:
+    uv tool install 'odooctl[s3]'
+  new: |-
+    pipx inject odooctl 'odooctl[s3]==0.2.0'
+    # or for uv tool installs:
+    uv tool install 'odooctl[s3]==0.2.0'
+
+- path: staging-clone.md
+  old: |-
+    - Scrubs webhook/callback/endpoint URLs and `api_key`/`secret`/`token`/`password` system parameters.
+  new: |-
+    - Scrubs webhook/callback/endpoint URLs and `api_key`/`secret`/`token`/`password` system parameters.
+
+    !!! warning "Known staging-login issue in 0.2.0"
+        This release's broad system-parameter scrub can clear Odoo's required
+        `database.secret`. `/web/health` may still pass while the staging login
+        page returns HTTP 500. Upgrade to a release containing database-secret
+        rotation before relying on the cloned UI; do not copy the production
+        value into staging.

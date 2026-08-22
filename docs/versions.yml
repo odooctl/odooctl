@@ -16,6 +16,10 @@ aliases:
   stable: 0.2.0
   beta: 0.3.0b1
 
+# Preserve the original /docs/ entry point as the stable channel. Existing
+# bookmarks must not become 404s when versioned publishing is enabled.
+default: 0.2.0
+
 # The publisher always builds this checkout independently of immutable refs.
 development:
   channel: dev

@@ -71,8 +71,45 @@ def _replace_nav_path(value: Any, old: str, new: str) -> Any:
 def _apply_backport(build_source: Path, version: str, support_root: Path) -> None:
     """Apply an explicitly recorded historical documentation correction."""
     patch_root = support_root / "docs-version-patches" / version
-    if patch_root.exists():
-        shutil.copytree(patch_root, build_source / "docs", dirs_exist_ok=True)
+    if not patch_root.exists():
+        return
+
+    replacements_path = patch_root / "replacements.yml"
+    if replacements_path.exists():
+        replacements = yaml.safe_load(replacements_path.read_text())
+        if not isinstance(replacements, list):
+            raise ValueError(f"{replacements_path} must define a list of replacements")
+        for index, replacement in enumerate(replacements, start=1):
+            if not isinstance(replacement, dict):
+                raise ValueError(f"{replacements_path} replacement {index} must be a mapping")
+            relative = Path(str(replacement.get("path", "")))
+            if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(
+                    f"{replacements_path} replacement {index} has an unsafe path: {relative}"
+                )
+            old = replacement.get("old")
+            new = replacement.get("new")
+            if not isinstance(old, str) or not isinstance(new, str) or not old:
+                raise ValueError(
+                    f"{replacements_path} replacement {index} requires non-empty old/new text"
+                )
+            target = build_source / "docs" / relative
+            if not target.is_file():
+                raise ValueError(f"historical backport target does not exist: {target}")
+            content = target.read_text()
+            occurrences = content.count(old)
+            if occurrences != 1:
+                raise ValueError(
+                    f"historical backport expected one match in {target}, found {occurrences}"
+                )
+            target.write_text(content.replace(old, new, 1))
+
+    for candidate in patch_root.rglob("*"):
+        if not candidate.is_file() or candidate == replacements_path:
+            continue
+        target = build_source / "docs" / candidate.relative_to(patch_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate, target)
 
 
 def build_one(
@@ -84,6 +121,7 @@ def build_one(
     ref: str,
     commit: str,
     assets_dir: Path,
+    apply_backports: bool,
 ) -> None:
     """Build one source checkout and fail if its package version is different."""
     package = tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"]
@@ -98,7 +136,8 @@ def build_one(
             ignore=shutil.ignore_patterns(".git", ".venv", "site", "dist", "build", "__pycache__", "*.pyc"),
         )
         _stage_docs(build_source, assets_dir.parent.parent)
-        _apply_backport(build_source, version, assets_dir.parent.parent)
+        if apply_backports:
+            _apply_backport(build_source, version, assets_dir.parent.parent)
         checker = assets_dir.parent.parent / "scripts" / "check_documented_commands.py"
         _run(
             sys.executable,
@@ -145,8 +184,16 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
             _run("git", "worktree", "add", "--detach", str(source), ref, cwd=repo_root)
             try:
                 commit = _run("git", "rev-parse", "HEAD", cwd=source)
-                build_one(source, site_docs / version, version=version, channel=channel, ref=ref,
-                          commit=commit, assets_dir=assets_dir)
+                build_one(
+                    source,
+                    site_docs / version,
+                    version=version,
+                    channel=channel,
+                    ref=ref,
+                    commit=commit,
+                    assets_dir=assets_dir,
+                    apply_backports=True,
+                )
                 versions.append({"version": version, "channel": channel, "ref": ref, "commit": commit,
                                  "published_at": published_at, "canonical_url": f"/docs/{version}/"})
             finally:
@@ -155,8 +202,16 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
     dev_version = tomllib.loads((repo_root / "pyproject.toml").read_text())["project"]["version"]
     dev_channel = config["development"]["channel"]
     dev_commit = _run("git", "rev-parse", "HEAD", cwd=repo_root)
-    build_one(repo_root, site_docs / dev_channel, version=dev_version, channel=dev_channel,
-              ref="master", commit=dev_commit, assets_dir=assets_dir)
+    build_one(
+        repo_root,
+        site_docs / dev_channel,
+        version=dev_version,
+        channel=dev_channel,
+        ref="master",
+        commit=dev_commit,
+        assets_dir=assets_dir,
+        apply_backports=False,
+    )
     versions.append({"version": dev_version, "channel": dev_channel, "ref": "master", "commit": dev_commit,
                      "published_at": published_at, "canonical_url": f"/docs/{dev_channel}/"})
 
@@ -166,7 +221,19 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
         if version not in by_version:
             raise ValueError(f"alias {channel!r} points to unknown version {version!r}")
         shutil.copytree(site_docs / version, site_docs / channel, dirs_exist_ok=True)
-    manifest = {"versions": versions, "aliases": aliases, "retention": config.get("retention", "")}
+    default_version = config.get("default")
+    if default_version not in by_version:
+        raise ValueError(f"default documentation points to unknown version {default_version!r}")
+    # Preserve the original /docs/ entry point as a full stable copy. This is
+    # intentionally done after building every version so the copy cannot hide
+    # a failed retained build.
+    shutil.copytree(site_docs / default_version, site_docs, dirs_exist_ok=True)
+    manifest = {
+        "versions": versions,
+        "aliases": aliases,
+        "default": default_version,
+        "retention": config.get("retention", ""),
+    }
     (site_docs / "versions.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
 

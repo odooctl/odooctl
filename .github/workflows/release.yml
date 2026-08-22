@@ -17,6 +17,9 @@ jobs:
       prerelease: ${{ steps.release_type.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The documentation gate builds every retained release tag.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: ${{ env.UV_VERSION }}
@@ -88,14 +91,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # Publish immutable releases from tags and development docs from master.
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+          ref: master
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
+          enable-cache: true
+      - name: Install locked project environment
+        run: uv sync --frozen
       - name: Publish retained documentation including this release
         run: |
-          pip install mkdocs-material
-          python scripts/build_versioned_docs.py \
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
             --repo-root . \
             --site-dir site \
             --versions-file docs/versions.yml \

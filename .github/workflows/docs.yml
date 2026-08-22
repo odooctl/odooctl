@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Keep the documentation checker on the same locked project environment as CI.
+  UV_VERSION: '0.12.3'
+
 concurrency:
   group: odooctl-pages
   cancel-in-progress: false
@@ -23,13 +27,16 @@ jobs:
         with:
           # Every retained snapshot is checked out from its immutable tag.
           fetch-depth: 0
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
+          enable-cache: true
+      - name: Install locked project environment
+        run: uv sync --frozen
       - name: Build every retained documentation version
         run: |
-          pip install mkdocs-material
-          python scripts/build_versioned_docs.py \
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
             --repo-root . \
             --site-dir site \
             --versions-file docs/versions.yml \

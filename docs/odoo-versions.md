@@ -11,16 +11,17 @@ disposable Docker Compose stack (`odoo` and `db` services).
 
 | odooctl release | Odoo major / image | PostgreSQL | Tested operations | Date | Known limitations |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 17.0 / `odoo:17.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
-| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 18.0 / `odoo:18.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
-| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 19.0 / `odoo:19.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | Login-form CSRF assertion was not yet part of this run. |
-| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 17.0 / `odoo:17.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
-| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 18.0 / `odoo:18.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
-| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 19.0 / `odoo:19.0` | 16 | same lifecycle plus staging login form after neutralization | 2026-08-08 | Beta; commands/configuration may change before final. |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 17.0 / `odoo:17.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | The gate did not render the staging login form; the released sanitizer can clear `database.secret`. |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 18.0 / `odoo:18.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | The gate did not render the staging login form; the released sanitizer can clear `database.secret`. |
+| `0.2.0` (`1b482535f060054d98efc258ce4cc61384a465e4`) | 19.0 / `odoo:19.0` | 16 | validate, doctor, status, backup verify, sanitized clone, cross-env restore, API/runner parity | 2026-07-19 | The gate did not render the staging login form; the released sanitizer can clear `database.secret`. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 17.0 / `odoo:17.0` | 16 | then-current lifecycle; no login-form assertion | 2026-08-08 | Beta; the released sanitizer can clear `database.secret` and break staging login. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 18.0 / `odoo:18.0` | 16 | then-current lifecycle; no login-form assertion | 2026-08-08 | Beta; the released sanitizer can clear `database.secret` and break staging login. |
+| `0.3.0b1` (`ea14df128ad4377f52ded427156e0b7383408f5e`) | 19.0 / `odoo:19.0` | 16 | then-current lifecycle; no login-form assertion | 2026-08-08 | Beta; the released sanitizer can clear `database.secret` and break staging login. |
 
-The `0.3.0b1` support gate verifies `/web/health` as the machine endpoint,
-then separately loads the cookie/redirect-aware staging login form and checks
-its CSRF token after sanitization.
+The current unreleased support gate verifies `/web/health` as the machine
+endpoint, then separately loads the cookie/redirect-aware staging login form
+and checks its CSRF token after sanitization. That assertion and the
+`database.secret` rotation fix are not part of the tagged releases above.
 
 ## Config fields to review per version
 

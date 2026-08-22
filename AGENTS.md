@@ -87,8 +87,8 @@ Generated, do not edit: `site/`, `dist/`, `odooctl/web/dist/`, `docs/index.md`
 - Work split into tasks → commit after **each** task, not at the end.
 - A commit must be self-contained and green on its own. If it isn't, the task
   boundary was wrong — adjust the split, not the rule.
-- Never `git push`, open a PR, merge, or `--force` without being asked.
-- keep the remote up to date, when ever commiting, push to the branch.
+- Never `git push`, open a PR, merge, or `--force` without being asked. When a
+  task authorizes pushing, keep the remote branch current after every commit.
 
 **Messages** — Conventional Commits, imperative, summary <70 chars
 (`feat: add PostgreSQL WAL archiving and PITR`). Types: `feat`, `fix`, `docs`,
@@ -101,7 +101,7 @@ under `## [Unreleased]`. Never commit secrets, real hostnames, or customer data.
 `.github/PULL_REQUEST_TEMPLATE.md`; tick a checklist box only if you ran it, and
 state what you couldn't run. `--draft` while checks are unverified. `area/*`
 labels come from `.github/labeler.yml` — don't hand-apply. One logical change.
-always create draft PR's for new branches.
+Create PRs for new branches as drafts until their checks are verified.
 
 **Releases** — the release workflow fails if the tag ≠ `pyproject.toml` version.
 Bump version → move `[Unreleased]` into a dated section → `release: prepare X.Y.Z`

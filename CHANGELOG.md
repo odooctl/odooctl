@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documentation publishing now retains immutable stable and beta snapshots,
+  channel aliases, a version selector, and a separately labeled development
+  tree. Historical corrections are explicit and fail closed when tagged source
+  text does not match.
 - `odooctl serve` remains loopback-only by default. TLS reverse-proxy
   deployments can now opt in to exact, non-wildcard `--allowed-host` values
   instead of relying on an undocumented runtime allowlist workaround.

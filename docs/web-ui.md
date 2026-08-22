@@ -56,10 +56,10 @@ export ODOOCTL_API_KEY="$(python -c 'import secrets; print(secrets.token_hex(32)
 odooctl serve
 
 # Override with a custom dist directory (for local development)
-ODOOCTL_API_KEY=mysecret odooctl serve --static-dir path/to/custom/dist
+odooctl serve --static-dir path/to/custom/dist
 
 # Custom port (keep the default localhost-only bind)
-ODOOCTL_API_KEY=mysecret odooctl serve --host 127.0.0.1 --port 9000
+odooctl serve --host 127.0.0.1 --port 9000
 ```
 
 > **Warning:** the server speaks plain HTTP. Do not expose `--host 0.0.0.0`
