@@ -20,7 +20,7 @@ jobs:
         with:
           # The documentation gate builds every retained release tag.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           python-version: '3.12'
@@ -94,7 +94,7 @@ jobs:
           # Publish immutable releases from tags and development docs from master.
           fetch-depth: 0
           ref: master
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           python-version: '3.12'
