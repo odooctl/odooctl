@@ -45,7 +45,7 @@ jobs:
       - name: Check built links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --offline 'site/docs/**/*.html'
+          args: --offline --root-dir site 'site/docs/**/*.html'
       # The site lives at odooctl.github.io (org site), so it must be served
       # from the odooctl/odooctl.github.io repo. The complete retained tree is
       # rebuilt on every publish, so no immutable version can be dropped.
