@@ -19,6 +19,7 @@ import socket
 import subprocess
 import time
 import uuid
+from http.cookiejar import CookieJar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -196,7 +197,7 @@ class OdooStack:
         deadline = time.time() + timeout
         import urllib.request
 
-        url = f"http://localhost:{self.port}/web/login"
+        url = f"http://localhost:{self.port}/web/health"
         while time.time() < deadline:
             try:
                 with urllib.request.urlopen(url, timeout=5) as response:
@@ -206,6 +207,22 @@ class OdooStack:
                 pass
             time.sleep(3)
         raise TimeoutError(f"Odoo at {url} did not become healthy within {timeout}s")
+
+    def staging_login_form(self) -> str:
+        """Load the sanitized staging login form with normal browser redirects.
+
+        This is deliberately separate from the machine health endpoint. It
+        catches a missing ``database.secret``: Odoo can answer /web/health
+        while failing to render the CSRF-protected login form.
+        """
+        import urllib.request
+
+        cookies = CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+        url = f"http://localhost:{self.port}/web/login?db=odoo_staging"
+        with opener.open(url, timeout=15) as response:
+            assert response.status == 200, response.status
+            return response.read().decode("utf-8", errors="replace")
 
 
 @pytest.fixture(params=_versions(), scope="module")

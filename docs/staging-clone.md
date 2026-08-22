@@ -48,6 +48,10 @@ Every profile (`minimal`, `normal`, `strict`) applies the mandatory baseline:
 - Cancels pending `queue_job` records and disables `base_automation` rules.
 - Purges the unsent mail queue (`mail_mail`).
 - Scrubs webhook/callback/endpoint URLs and `api_key`/`secret`/`token`/`password` system parameters.
+- Rotates Odoo's required `database.secret` after that broad credential scrub.
+  This is a fresh, per-clone CSRF/session-signing value—not a retained
+  production credential. It must be non-empty (at least 32 characters) or
+  Odoo cannot render the staging login form.
 - Rewrites `web.base.url` to the staging domain and sets `web.base.url.freeze = True` (inserting the parameter if missing) so Odoo cannot rewrite the URL back to production on the next admin login.
 - Sets and verifies Odoo's standard `database.is_neutralized` flag so the
   database displays the familiar neutralized-state warning.
@@ -61,6 +65,7 @@ Every profile (`minimal`, `normal`, `strict`) applies the mandatory baseline:
 `strict` also blanks every `auth_%` system parameter.
 
 Before the database swap, odooctl verifies the SMTP sink, incoming mail,
-scheduled actions, payment providers, base URL/freeze state, and the standard
-neutralized flag. Any failed check leaves the previous target database in
-place.
+scheduled actions, payment providers, base URL/freeze state, the standard
+neutralized flag, and a usable rotated `database.secret`. The integration
+matrix additionally loads the CSRF-protected staging login form after
+neutralization. Any failed check leaves the previous target database in place.

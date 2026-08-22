@@ -56,6 +56,11 @@ finding, so it is stated here explicitly.
 - **Secrets**: referenced by env-var name in config, resolved only at execution
   time in the privileged process, redacted from logs, errors, and streamed
   operation events.
+- **Staging database secret**: sanitization removes copied integration
+  credentials, then creates a fresh `database.secret` for the clone. This Odoo
+  CSRF/session-signing value is functional state, not a retained production
+  credential; an empty value would prevent the staging login page from
+  rendering. The new value is verified before the database swap.
 
 ### Remote-backup boundary
 

@@ -29,11 +29,23 @@ restricts accepted `Host` headers to `127.0.0.1` / `localhost`. Keep it that
 way: the API is designed for localhost-only operation.
 
 > **Warning:** do not bind the API to a non-loopback address (e.g.
-> `--host 0.0.0.0`) without an authenticating reverse proxy, TLS, and firewall
-> rules in front of it. The API speaks plain HTTP, so bearer tokens would
-> cross the network unencrypted, and anyone who obtains one can enqueue
-> privileged operations. If remote access is needed, prefer an SSH tunnel to
-> `127.0.0.1:8787`.
+> `--host 0.0.0.0`) without an authenticating TLS reverse proxy and restrictive
+> firewall rules. The API speaks plain HTTP, so bearer tokens would otherwise
+> cross the network unencrypted. Prefer an SSH tunnel to `127.0.0.1:8787`.
+
+For a persistent proxy/Tailscale deployment, opt in to only the exact public
+Host headers accepted by `TrustedHostMiddleware`:
+
+```bash
+odooctl serve --host 0.0.0.0 --allowed-host odooctl.ops.example.com
+```
+
+The option is repeatable but rejects wildcard patterns. The reverse proxy must
+terminate TLS, preserve that `Host` header, and be the only network peer
+allowed through the host firewall. Keep bearer tokens and `ODOOCTL_API_KEY`
+out of proxy configuration and command lines; use a mode-`0600` systemd
+environment file. See [Web UI](web-ui.md#remote-access) for SSH and persistent
+service guidance.
 
 Rebuilding the SPA dist requires a server restart: `index.html` is read once
 at startup and served from memory for the lifetime of the process.
@@ -319,7 +331,8 @@ short-lived clients). `max_polls` is clamped server-side to `[1, 600]`
 - **Param redaction**: user-supplied operation params are passed through
   `odooctl.security.redaction.redact` before being stored or logged.
 - **Localhost-only default**: `TrustedHostMiddleware` restricts the API to
-  `127.0.0.1` / `localhost` by default.
+  `127.0.0.1` / `localhost` by default. A non-loopback deployment must opt in
+  to exact `--allowed-host` values; wildcards are rejected before startup.
 
 ## Queue format
 

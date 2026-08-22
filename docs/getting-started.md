@@ -4,16 +4,16 @@ This guide takes a globally installed `odooctl` from zero to a first verified Do
 
 ## 1. Install
 
-PyPI publication is coming soon; until then, install from a source checkout:
+Install the current stable release from PyPI:
 
 ```bash
-git clone https://github.com/odooctl/odooctl && cd odooctl
-pipx install .
-# or
-uv tool install .
+pipx install 'odooctl==0.2.0'
+# or: uv tool install 'odooctl==0.2.0'
+odooctl --version
 ```
 
-Once published, `pipx install odooctl` / `uv tool install odooctl` will work directly.
+The `0.3.0b1` beta is opt-in and never an implicit stable upgrade. Use the
+exact beta/rollback commands in [Installation](installation.md#release-channels).
 
 Install optional S3 support only when you need remote backup uploads:
 

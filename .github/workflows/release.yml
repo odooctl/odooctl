@@ -13,8 +13,13 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.release_type.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The documentation gate builds every retained release tag.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           version: ${{ env.UV_VERSION }}
@@ -26,10 +31,23 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v${package_version}"
       - name: Install locked environment
         run: uv sync --frozen --extra dev --extra api
+      - name: Classify release channel with PEP 440
+        id: release_type
+        run: |
+          prerelease="$(uv run --frozen python -c 'from packaging.version import Version; import os; print(str(Version(os.environ["GITHUB_REF_NAME"][1:]).is_prerelease).lower())')"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
       - name: Run tests
         run: uv run --frozen pytest -q
       - name: Build
         run: uv run --frozen python -m build
+      - name: Build release documentation from this exact tag
+        run: |
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
+            --repo-root . \
+            --site-dir site \
+            --versions-file docs/versions.yml \
+            --assets-dir docs/_versioning
+          test -f "site/docs/${GITHUB_REF_NAME#v}/index.html"
       # Deliberately unlocked: verifies the artifact we are about to publish
       # installs cleanly from live PyPI, exactly as a user would get it.
       - name: Smoke-install wheel
@@ -61,5 +79,40 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, 'b') }}
-          make_latest: ${{ contains(github.ref_name, 'b') && 'false' || 'true' }}
+          prerelease: ${{ needs.build.outputs.prerelease }}
+          make_latest: ${{ needs.build.outputs.prerelease == 'true' && 'false' || 'true' }}
+
+  publish-docs:
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: odooctl-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Publish immutable releases from tags and development docs from master.
+          fetch-depth: 0
+          ref: master
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install locked project environment
+        run: uv sync --frozen
+      - name: Publish retained documentation including this release
+        run: |
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
+            --repo-root . \
+            --site-dir site \
+            --versions-file docs/versions.yml \
+            --assets-dir docs/_versioning
+          cp landing/index.html site/index.html
+      - name: Deploy to odooctl/odooctl.github.io
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}
+          external_repository: odooctl/odooctl.github.io
+          publish_branch: main
+          publish_dir: site

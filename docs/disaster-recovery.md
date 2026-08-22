@@ -360,6 +360,14 @@ no live drill target: every write stays inside the disposable boundary. The
 CLI and runner record the drill as a locked, audited operation and return
 non-zero when restore, healthcheck, or cleanup fails.
 
+### Drill report record
+
+Record the exact `odooctl --version` output and Git commit together with every
+drill result. This lets an operator distinguish behavior that changed between
+releases from environment-specific failure. At minimum, retain date, source
+environment, backup ID, Odoo/PostgreSQL images, odooctl package/commit,
+health result, and cleanup result; do not record credentials or bearer tokens.
+
 ### Custom-addon prerequisite
 
 The isolated Odoo container deliberately does not inherit arbitrary Compose

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block announce %}
+<div class="odooctl-version-banner" data-docs-channel="{{ config.extra.docs_channel }}">
+  <span><strong>odooctl {{ config.extra.docs_version }}</strong> · {{ config.extra.docs_channel }} documentation</span>
+  {% if config.extra.docs_channel == "beta" %}
+  <span>This is prerelease documentation; commands and configuration may change before the final release.</span>
+  {% elif config.extra.docs_channel == "dev" %}
+  <span>This is unreleased development documentation and may not match any published package.</span>
+  {% endif %}
+  <label class="odooctl-version-picker" for="odooctl-version-selector">
+    Version
+    <select id="odooctl-version-selector" aria-label="Documentation version"></select>
+  </label>
+</div>
+{% endblock %}

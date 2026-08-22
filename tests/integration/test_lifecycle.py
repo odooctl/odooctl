@@ -74,6 +74,14 @@ def test_clone_production_to_staging_sanitizes(odoo_stack):
         "SELECT value FROM ir_config_parameter WHERE key = 'database.is_neutralized'",
     )
     assert neutralized.lower() == "true"
+    database_secret = odoo_stack.psql(
+        "odoo_staging",
+        "SELECT value FROM ir_config_parameter WHERE key = 'database.secret'",
+    )
+    assert len(database_secret) >= 32
+    login_form = odoo_stack.staging_login_form()
+    assert "csrf_token" in login_form
+    assert "<form" in login_form
     metadata = json.loads(
         (odoo_stack.root / ".odooctl" / "sanitizations" / "staging-latest.json").read_text()
     )

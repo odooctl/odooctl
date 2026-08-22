@@ -3,34 +3,54 @@ name: Docs
 on:
   push:
     branches: [master]
-    paths: ['docs/**', 'mkdocs.yml', 'README.md', 'landing/**', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-version-patches/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', 'scripts/check_documented_commands.py', '.github/workflows/docs.yml']
+  pull_request:
+    paths: ['docs/**', 'docs-version-patches/**', 'mkdocs.yml', 'README.md', 'landing/**', 'scripts/build_versioned_docs.py', 'scripts/check_documented_commands.py', '.github/workflows/docs.yml']
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # Keep the documentation checker on the same locked project environment as CI.
+  UV_VERSION: '0.12.3'
+
+concurrency:
+  group: odooctl-pages
+  cancel-in-progress: false
 
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
         with:
+          # Every retained snapshot is checked out from its immutable tag.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
           python-version: '3.12'
-      - name: Build site
+          enable-cache: true
+      - name: Install locked project environment
+        run: uv sync --frozen
+      - name: Build every retained documentation version
         run: |
-          pip install mkdocs-material
-          # index.md is generated from README.md at build time. README uses
-          # GitHub-relative links (docs/foo.md, CONTRIBUTING.md); rewrite them
-          # to the in-site paths and stage the root governance files.
-          cp CONTRIBUTING.md CODE_OF_CONDUCT.md SECURITY.md LICENSING.md SUPPORT.md docs/ 2>/dev/null || true
-          sed -E 's#\]\(docs/#](#g' README.md > docs/index.md
-          # Landing page at the site root; MkDocs docs under /docs/.
-          mkdocs build --strict --site-dir site/docs
+          uv run --frozen --with mkdocs-material python scripts/build_versioned_docs.py \
+            --repo-root . \
+            --site-dir site \
+            --versions-file docs/versions.yml \
+            --assets-dir docs/_versioning
           cp landing/index.html site/index.html
+      - name: Check built links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --root-dir site 'site/docs/**/*.html'
       # The site lives at odooctl.github.io (org site), so it must be served
-      # from the odooctl/odooctl.github.io repo; push the built site there.
+      # from the odooctl/odooctl.github.io repo. The complete retained tree is
+      # rebuilt on every publish, so no immutable version can be dropped.
       - name: Deploy to odooctl/odooctl.github.io
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: peaceiris/actions-gh-pages@v4
         with:
           deploy_key: ${{ secrets.PAGES_DEPLOY_KEY }}

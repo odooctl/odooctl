@@ -10,13 +10,17 @@ gitops:
   preview_base_domain: preview.example.com
   preview_source_environment: staging
   preview_ttl_hours: 24
-  initializer_image: registry.example.com/platform/odooctl:0.2.0
+  initializer_image: registry.example.com/platform/odooctl:0.3.0b1
   preview_image_template: "registry.example.com/acme/odoo:pr-{revision}"
 ```
 
 The initializer image must contain `odooctl`, the same Odoo addons used by the
 target image, PostgreSQL client tools, and any configured native neutralization
 support.
+
+Pin this image to the odooctl release documented by the snapshot you are
+reading. Development documentation intentionally does not imply that a moving
+`latest` image exists or is compatible with a released configuration.
 
 ## Environment overlays
 
