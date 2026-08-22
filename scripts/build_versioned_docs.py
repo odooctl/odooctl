@@ -68,6 +68,13 @@ def _replace_nav_path(value: Any, old: str, new: str) -> Any:
     return new if value == old else value
 
 
+def _apply_backport(build_source: Path, version: str, support_root: Path) -> None:
+    """Apply an explicitly recorded historical documentation correction."""
+    patch_root = support_root / "docs-version-patches" / version
+    if patch_root.exists():
+        shutil.copytree(patch_root, build_source / "docs", dirs_exist_ok=True)
+
+
 def build_one(
     source: Path,
     output: Path,
@@ -91,6 +98,7 @@ def build_one(
             ignore=shutil.ignore_patterns(".git", ".venv", "site", "dist", "build", "__pycache__", "*.pyc"),
         )
         _stage_docs(build_source, assets_dir.parent.parent)
+        _apply_backport(build_source, version, assets_dir.parent.parent)
         checker = assets_dir.parent.parent / "scripts" / "check_documented_commands.py"
         _run(
             sys.executable,
