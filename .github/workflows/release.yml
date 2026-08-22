@@ -13,6 +13,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.release_type.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
@@ -26,6 +28,11 @@ jobs:
           test "${GITHUB_REF_NAME}" = "v${package_version}"
       - name: Install locked environment
         run: uv sync --frozen --extra dev --extra api
+      - name: Classify release channel with PEP 440
+        id: release_type
+        run: |
+          prerelease="$(uv run --frozen python -c 'from packaging.version import Version; import os; print(str(Version(os.environ["GITHUB_REF_NAME"][1:]).is_prerelease).lower())')"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
       - name: Run tests
         run: uv run --frozen pytest -q
       - name: Build
@@ -64,18 +71,13 @@ jobs:
           path: dist/
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
-      - name: Classify release channel with PEP 440
-        id: release_type
-        run: |
-          prerelease="$(python -c 'from packaging.version import Version; import os; print(str(Version(os.environ["GITHUB_REF_NAME"][1:]).is_prerelease).lower())')"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
-          prerelease: ${{ steps.release_type.outputs.prerelease }}
-          make_latest: ${{ steps.release_type.outputs.prerelease == 'true' && 'false' || 'true' }}
+          prerelease: ${{ needs.build.outputs.prerelease }}
+          make_latest: ${{ needs.build.outputs.prerelease == 'true' && 'false' || 'true' }}
 
   publish-docs:
     needs: publish

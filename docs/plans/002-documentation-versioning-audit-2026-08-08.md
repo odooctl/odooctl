@@ -1,5 +1,9 @@
 # Documentation audit and version-preservation plan
 
+Date: 2026-08-08
+Status: COMPLETE
+Branch: docs/versioned-documentation
+
 Audit date: 2026-08-08
 
 Versions currently supported as published documentation targets:
