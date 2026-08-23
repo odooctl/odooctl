@@ -48,6 +48,8 @@ _KIND_ACTION: dict[str, Action] = {
     "pitr_reconcile": Action.BACKUP,
     "filestore_migrate": Action.RESTORE,
     "migrate_rehearsal": Action.RESTORE,
+    "service_logs": Action.LOGS,
+    "service_restart": Action.DEPLOY,
 }
 
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -297,7 +299,7 @@ def enqueue_operation(
     # policy is applied to the actual enqueue target.
     try:
         environment_config = ctx.config.env(body.environment)
-        protected = ctx.config.is_protected(body.environment)
+        protected = rbac.kind_protected(ctx.config, body.kind, body.environment)
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

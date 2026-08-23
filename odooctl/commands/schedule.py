@@ -13,9 +13,14 @@ SCHEDULE_COMMANDS = (
     "backup-remote-verify",
     "dr-drill",
     "doctor",
+    "sync",
     "pitr-base",
     "pitr-reconcile",
 )
+
+DEFAULT_INTERVALS: dict[str, dict[str, str]] = {
+    "sync": {"systemd": "*:0/5", "cron": "*/5 * * * *"},
+}
 
 _UNSAFE_UNIT_COMPONENT = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -70,6 +75,8 @@ class ScheduleSpec:
         elif self.command == "doctor":
             # `doctor` is project-wide and does not accept an environment.
             command_tokens = ("doctor",)
+        elif self.command == "sync":
+            command_tokens = ("sync", self.environment)
         elif self.command == "pitr-base":
             command_tokens = (
                 "pitr",
@@ -199,11 +206,13 @@ def render(
     config_path: str = "odooctl.yml",
     *,
     format: str = "systemd",
-    interval: str = "daily",
+    interval: str | None = None,
     user: str | None = None,
     odooctl_bin: str = "odooctl",
     environment_file: str | Path | None = None,
 ) -> str:
+    if interval is None:
+        interval = DEFAULT_INTERVALS.get(command, {}).get(format, "daily")
     spec = build_spec(
         command,
         environment,

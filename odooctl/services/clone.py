@@ -15,7 +15,7 @@ from odooctl.odoo.db_swap import swap_temp_database
 from odooctl.odoo.healthcheck import check_url, with_db_selector
 from odooctl.odoo.module_update import update_modules_compose
 from odooctl.odoo.neutralize import neutralize_database, probe_native_neutralization
-from odooctl.metadata.models import SanitizationMetadata
+from odooctl.metadata.models import CloneManifest, SanitizationMetadata
 from odooctl.metadata.store import MetadataStore
 from odooctl.services.models import CloneResult
 
@@ -157,7 +157,26 @@ def run_clone(
         retries=cfg.healthcheck.retries,
         interval=cfg.healthcheck.interval_seconds,
     )
+    mechanisms = []
+    if neutralization:
+        mechanisms = [
+            f"native:{neutralization.native_status}",
+            f"extensions:{neutralization.extension_statements}",
+        ]
+    MetadataStore(ctx.project.state_dir).save_clone_manifest(
+        CloneManifest(
+            project=cfg.project.name,
+            source=source,
+            target=target,
+            db_name=dst.db_name,
+            odoo_version=cfg.project.odoo_version,
+            sanitized=should_sanitize,
+            sanitization_profile=sanitization_profile if should_sanitize else None,
+            sanitization_mechanisms=mechanisms,
+        )
+    )
     return CloneResult(
         url=base_url,
         native_neutralization=neutralization.native_status if neutralization else None,
+        sanitization_mechanisms=mechanisms,
     )

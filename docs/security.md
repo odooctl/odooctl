@@ -28,6 +28,11 @@ finding, so it is stated here explicitly.
 - Consequently, protect `odooctl.yml` like you protect the compose file:
   repository write access, host filesystem permissions, and code review are
   the controls. `odooctl` will never mitigate a hostile config author.
+- The [machine-local overlay](configuration.md#machine-local-overlay-odooctllocalyml)
+  (`odooctl.local.yml`) is merged with the same authority as the main config
+  and carries the same trust: anyone who can write it is an operator. Because
+  it is untracked by design, repository review does **not** cover it — host
+  filesystem permissions are the sole control for the overlay.
 - Defense in depth still applies: config values that flow into subprocess
   arguments, container paths, volume names, or reverse-proxy rules are
   validated at load time (charset/length/hostname rules), and no code path

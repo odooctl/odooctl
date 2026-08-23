@@ -77,6 +77,8 @@ _KIND_ACTION: dict[str, rbac.Action] = {
     "pitr_reconcile": rbac.Action.BACKUP,
     "filestore_migrate": rbac.Action.RESTORE,
     "migrate_rehearsal": rbac.Action.RESTORE,
+    "service_logs": rbac.Action.LOGS,
+    "service_restart": rbac.Action.DEPLOY,
 }
 
 
@@ -195,6 +197,29 @@ class RunnerWorker:
                 stacklevel=2,
             )
 
+    def probe_container_status(self) -> None:
+        """Write a container-status snapshot for every registered project."""
+        from odooctl.adapters.docker_compose import DockerComposeAdapter
+        from odooctl.operations.container_status import write_snapshot
+        from odooctl.registry import context_from_registered
+
+        for proj in self._registry.projects.values():
+            try:
+                ctx = context_from_registered(proj)
+            except Exception:
+                continue
+            try:
+                compose = DockerComposeAdapter(
+                    ctx.config.runtime.compose_file, project_dir=str(ctx.root)
+                )
+                records = compose.ps_json()
+                write_snapshot(ctx.state_dir, records)
+            except Exception as exc:
+                try:
+                    write_snapshot(ctx.state_dir, [], error=redact(str(exc)))
+                except Exception:
+                    pass
+
     def claim_and_run(self) -> bool:
         """Claim and execute one operation. Returns True if work was done.
 
@@ -257,7 +282,7 @@ class RunnerWorker:
         # the API applied before enqueueing.
         try:
             action = _KIND_ACTION[entry.kind]
-            protected = ctx.config.is_protected(entry.environment)
+            protected = rbac.kind_protected(ctx.config, entry.kind, entry.environment)
             rbac.require(_principal_from_payload(payload), action, protected=protected)
         except (KeyError, ValueError, rbac.AccessDenied) as exc:
             store.update_status(
@@ -344,7 +369,34 @@ class RunnerWorker:
             last executed operation failed (``once``) or a failure stopped the
             loop (``fail_fast``). ``odooctl runner`` exits non-zero on False.
         """
+        from odooctl.operations.runner_heartbeat import write_heartbeat
+
+        started_at = _utcnow()
+
+        def _beat() -> None:
+            # Best-effort liveness signal for the API/UI; never let a heartbeat
+            # write error interrupt operation processing.
+            try:
+                write_heartbeat(self._registry.path, started_at=started_at)
+            except Exception:
+                pass
+
+        last_probe = 0.0
+
+        def _probe_containers() -> None:
+            # Refresh each project's container-status snapshot on a fixed
+            # cadence so the UI shows live state. Best-effort per project.
+            nonlocal last_probe
+            from odooctl.operations.container_status import PROBE_INTERVAL_SECONDS
+
+            if time.monotonic() - last_probe < PROBE_INTERVAL_SECONDS:
+                return
+            last_probe = time.monotonic()
+            self.probe_container_status()
+
         while True:
+            _beat()
+            _probe_containers()
             did_work = self.claim_and_run()
             if once:
                 return self.last_run_ok
@@ -858,8 +910,49 @@ def _dispatch(entry: QueueEntry, svc_ctx: ServiceContext, op_ctx: OperationConte
             phase="migrate_rehearsal",
         )
 
+    elif kind == OperationKind.SERVICE_LOGS.value:
+        from odooctl.adapters.docker_compose import DockerComposeAdapter
+
+        cfg = svc_ctx.project.config
+        service = _resolve_service_param(cfg, params.get("service"))
+        tail = max(1, min(int(params.get("tail", 200) or 200), 1000))
+        compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(svc_ctx.project.root))
+        output = compose.logs_capture(service, tail=tail)
+        lines = redact(output).splitlines()
+        for line in lines[-tail:]:
+            op_ctx.emit(line, phase="logs")
+        op_ctx.emit(f"log tail complete: {service} ({len(lines)} lines)", phase="logs")
+
+    elif kind == OperationKind.SERVICE_RESTART.value:
+        from odooctl.adapters.docker_compose import DockerComposeAdapter
+
+        cfg = svc_ctx.project.config
+        service = _resolve_service_param(cfg, params.get("service"))
+        compose = DockerComposeAdapter(cfg.runtime.compose_file, project_dir=str(svc_ctx.project.root))
+        op_ctx.emit(f"restarting service {service}", phase="restart")
+        compose.restart(service)
+        running = compose.ps()
+        if service not in running:
+            raise RuntimeError(f"Service not running after restart: {service}")
+        op_ctx.emit(f"service restarted: {service}", phase="restart")
+
     else:
         raise ValueError(f"Unsupported operation kind in runner: {kind!r}")
+
+
+def _resolve_service_param(cfg, requested: object) -> str:
+    """Validate a user-supplied service name against the config allowlist.
+
+    Only the configured Odoo and Postgres services may be targeted — a queue
+    entry must not be able to name arbitrary compose services.
+    """
+    allowed = {cfg.odoo.service, cfg.postgres.service}
+    if requested in (None, ""):
+        return cfg.odoo.service
+    service = str(requested)
+    if service not in allowed:
+        raise ValueError(f"Service {service!r} not allowed; expected one of: {', '.join(sorted(allowed))}")
+    return service
 
 
 def _principal_from_payload(payload: dict) -> Principal:

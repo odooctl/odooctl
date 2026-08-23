@@ -21,6 +21,7 @@ from typing import Callable
 from fastapi import FastAPI
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
+from odooctl.api.routes_auth import router as auth_router
 from odooctl.api.routes_operations import router as operations_router
 from odooctl.api.routes_projects import router as projects_router
 from odooctl.security import tokens
@@ -33,6 +34,7 @@ def create_app(
     allowed_hosts: list[str] | None = None,
     extra_allowed_hosts: list[str] | None = None,
     static_dir: Path | None = None,
+    auth_dir: Path | None = None,
 ) -> FastAPI:
     """Create and configure the odooctl FastAPI application.
 
@@ -46,6 +48,8 @@ def create_app(
         given explicitly.
     :param static_dir: Optional path to a pre-built SPA dist directory mounted
         at ``/`` after all API routes.
+    :param auth_dir: Directory holding the server-level user/session stores;
+        defaults to the registry's directory (``~/.config/odooctl``).
     """
     # Key-strength floor (F24): a short HMAC key makes bearer/capability tokens
     # brute-forceable, so it is rejected unconditionally regardless of how the
@@ -66,6 +70,7 @@ def create_app(
 
     app.state.api_key = api_key
     app.state.registry_loader = registry_loader
+    app.state.auth_dir = Path(auth_dir) if auth_dir is not None else None
 
     if allowed_hosts is None:
         # Localhost-only by default. "testclient" (the Starlette TestClient
@@ -77,6 +82,7 @@ def create_app(
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
+    app.include_router(auth_router)
     app.include_router(projects_router)
     app.include_router(operations_router)
 

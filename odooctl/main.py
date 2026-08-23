@@ -36,7 +36,9 @@ from odooctl.commands import (
     serve as serve_cmd,
     setup as setup_cmd,
     status as status_cmd,
+    sync as sync_cmd,
     update_modules as update_cmd,
+    user as user_cmd,
     validate as validate_cmd,
 )
 
@@ -49,6 +51,7 @@ app.add_typer(ops_cmd.app, name="ops")
 app.add_typer(branch_cmd.app, name="branch")
 app.add_typer(catalog_cmd.app, name="catalog")
 app.add_typer(security_cmd.app, name="security")
+app.add_typer(user_cmd.app, name="user")
 app.add_typer(domain_cmd.app, name="domain")
 app.add_typer(dr_cmd.app, name="dr")
 app.add_typer(pitr_cmd.app, name="pitr")
@@ -173,6 +176,18 @@ def promote(
 ):
     promote_cmd.execute(source, target, _context_config(ctx, config), preview=preview, yes=yes)
 
+
+@app.command()
+def sync(
+    ctx: typer.Context,
+    environment: str,
+    config: str = "odooctl.yml",
+    force: bool = typer.Option(False, "--force", help="Deploy when behind even if auto_deploy is false."),
+    json_output: bool = typer.Option(False, "--json", "--json-output"),
+) -> None:
+    """Fetch, check drift, and deploy an auto-deploy environment when behind."""
+    sync_cmd.execute(environment, _context_config(ctx, config), force=force, json_output=json_output)
+
 @app.command()
 def logs(ctx: typer.Context, environment: str, service: str | None = None, config: str = "odooctl.yml", follow: bool = True, tail: int | None = None):
     logs_cmd.execute(environment, service, _context_config(ctx, config), follow=follow, tail=tail)
@@ -207,7 +222,7 @@ def schedule(
     command: str = typer.Argument(
         ...,
         help=(
-            "Schedule: backup, backup-remote-verify, dr-drill, doctor, "
+            "Schedule: backup, backup-remote-verify, dr-drill, doctor, sync, "
             "pitr-base, or pitr-reconcile."
         ),
     ),

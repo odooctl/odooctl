@@ -12,6 +12,8 @@ the set of roles granted within that org.
 """
 from __future__ import annotations
 
+import getpass
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -126,3 +128,25 @@ class Principal:
     @classmethod
     def service(cls, id: str, org_id: str, roles: frozenset[Role] | set[Role] | list[Role]) -> "Principal":
         return cls(id=id, org_id=org_id, kind=PrincipalKind.SERVICE, roles=frozenset(roles), display=id)
+
+
+#: Env var that overrides CLI actor attribution (e.g. a CI job sets
+#: ``ODOOCTL_ACTOR=ci:release-pipeline`` so audit records name the pipeline).
+ACTOR_ENV_VAR = "ODOOCTL_ACTOR"
+
+
+def local_actor() -> str:
+    """Attribution string for operations invoked from the local CLI.
+
+    A shell on the server is the local-admin principal; what audit needs is
+    *which* OS account acted, not a ``"cli"`` literal. Honors
+    :data:`ACTOR_ENV_VAR` so wrappers (CI, cron) can attribute themselves.
+    """
+    override = os.environ.get(ACTOR_ENV_VAR, "").strip()
+    if override:
+        return override
+    try:
+        username = getpass.getuser()
+    except OSError:
+        username = "unknown"
+    return f"local:{username}"

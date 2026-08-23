@@ -19,6 +19,7 @@ import typer
 from odooctl.catalog.registry import get_entry, get_stack_templates, load_manifest
 from odooctl.catalog.render import render_stack_template
 from odooctl.catalog.schema import CatalogEntry, StackTemplate
+from odooctl.commands.init import ensure_overlay_gitignored
 from odooctl.utils.logging import success, warn
 
 
@@ -152,6 +153,7 @@ def run(
         raise typer.BadParameter(str(exc)) from exc
 
     success(f"Scaffolded {output} for project '{project_name}' (stack: {chosen_stack})")
+    ensure_overlay_gitignored(output)
     warn(
         "Update domains, db names, filestore paths, and environment variable "
         "names in the generated odooctl.yml before running 'odooctl deploy'."

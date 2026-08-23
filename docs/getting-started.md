@@ -29,6 +29,8 @@ Run `odooctl` from a tracked Odoo project directory that contains your `docker-c
 
 You do not have to write `odooctl.yml` by hand: `odooctl import <path>` generates it from an existing Docker Compose deployment (read-only preview first, `--yes` to write), and `odooctl setup` scaffolds it for a brand-new project from a catalog stack template.
 
+Machine-specific values (ports, TLS off, local paths) belong in a gitignored [`odooctl.local.yml` overlay](configuration.md#machine-local-overlay-odooctllocalyml), not in the shared config.
+
 For Docker Compose deployments, prefer Docker-native execution mode so operators do not need host PostgreSQL clients:
 
 ```yaml

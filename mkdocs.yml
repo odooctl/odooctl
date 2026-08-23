@@ -46,6 +46,7 @@ nav:
       - Examples: examples.md
   - Operations:
       - Deployment: deployment.md
+      - Git sync (CI/CD): git-sync.md
       - Backup & restore: backup-restore.md
       - PostgreSQL PITR: pitr.md
       - Object-storage filestores: filestore-storage.md
@@ -69,6 +70,7 @@ nav:
       - Catalog: catalog.md
   - Security:
       - Security notes: security.md
+      - Users & access: users-and-access.md
       - RBAC: rbac.md
   - Project:
       - Contributing: CONTRIBUTING.md

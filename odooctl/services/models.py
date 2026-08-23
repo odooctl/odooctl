@@ -79,6 +79,35 @@ class RestoreResult:
 class CloneResult:
     url: str
     native_neutralization: str | None = None
+    sanitization_mechanisms: list[str] = field(default_factory=list)
+
+
+SyncStatus = Literal[
+    "up_to_date",
+    "behind",
+    "deployed",
+    "disabled",
+    "never_deployed",
+    "deploy_failed",
+    "dirty_worktree",
+    "diverged",
+    "no_remote",
+    "fetch_failed",
+    "unknown",
+]
+
+
+@dataclass
+class SyncOutcome:
+    environment: str
+    branch: str
+    status: SyncStatus
+    remote_commit: str | None = None
+    deployed_commit: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    message: str = ""
+    backup_id: str | None = None
 
 
 @dataclass

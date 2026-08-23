@@ -6,9 +6,13 @@ action matrix, secret handling, and capability tokens. It complements
 [`runner-architecture.md`](runner-architecture.md), which covers the
 web/API vs. privileged runner split.
 
-Current scope note: these checks are implemented as reusable primitives and are
-not yet wired into every existing CLI mutating command path. API/runner callers
-must invoke `rbac.require(...)` before enqueuing or executing protected work.
+Enforcement scope: every mutating API route authenticates a principal and
+checks the matrix (a test asserts this for all mutating routes), and the
+privileged runner re-checks the capability token's roles before executing.
+The local CLI is the local-admin principal — a shell on the server outranks
+any API role — so CLI commands are attributed (`local:<os-user>`) but not
+role-gated. User accounts and sessions are covered in
+[Users & access](users-and-access.md).
 
 The implementation lives in `odooctl/security/`:
 
@@ -92,6 +96,20 @@ rbac.require(admin, Action.DEPLOY, protected=True)       # ok
 
 `require()` raises `AccessDenied` (a `PermissionError` subclass) whose message
 names the principal and action but contains no secret material.
+
+Some operation kinds have a **project-wide blast radius** because compose
+services are shared by every environment: `rbac.kind_protected(cfg, kind, env)`
+computes the effective protected flag, and for `service_restart` it returns
+true when *any* environment in the project is protected — an operator cannot
+bounce the container serving production by targeting staging. Both the API
+enqueue path and the runner's defensive re-check use this helper.
+
+### Managing access from the web UI
+
+The web UI's **Access** page (`#/access`) renders this matrix live from
+`GET /rbac/matrix` and lets admins mint scoped bearer tokens via
+`POST /tokens` (minted role capped at the minter's own rank, TTL ≤ 7 days,
+token shown once). See `docs/web-ui.md`.
 
 ## Secrets
 

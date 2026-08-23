@@ -28,6 +28,8 @@ class OperationKind(str, Enum):
     PITR_RECONCILE = "pitr_reconcile"
     FILESTORE_MIGRATE = "filestore_migrate"
     MIGRATE_REHEARSAL = "migrate_rehearsal"
+    SERVICE_LOGS = "service_logs"
+    SERVICE_RESTART = "service_restart"
 
 
 class OperationStatus(str, Enum):

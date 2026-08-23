@@ -16,6 +16,13 @@ def render_workflow(environments: dict[str, str] | None = None, default_branch: 
     branch_cases = "\n".join(f'            {name}) expected_branch="{branch}" ;;' for name, branch in environments.items())
     return f"""name: odooctl deploy
 
+# Push-based deploys are the SECONDARY model. The primary CI/CD model is
+# pull-based: `odooctl sync` on a systemd timer on the server itself
+# (`odooctl schedule sync --env <env>`), which needs no inbound access and no
+# runner. This workflow requires a SELF-HOSTED runner installed on the server
+# (or with SSH/Docker access to it) — GitHub-hosted runners cannot reach your
+# VPS Docker daemon.
+
 on:
   workflow_dispatch:
     inputs:
@@ -33,7 +40,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     steps:
       - name: Enforce branch/environment mapping
         run: |

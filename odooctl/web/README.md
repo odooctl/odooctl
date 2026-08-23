@@ -38,7 +38,9 @@ ODOOCTL_API_KEY=mysecret odooctl serve
 ODOOCTL_API_KEY=mysecret odooctl serve --static-dir path/to/custom/dist
 ```
 
-Open `http://localhost:8787/` and paste an API token. Generate one with:
+Open `http://localhost:8787/` and sign in with a user account
+(`odooctl user add you@example.com --role admin` on the server), or expand
+the token fallback and paste a bearer token:
 
 ```bash
 odooctl security token mint --role operator
@@ -54,9 +56,10 @@ odooctl security token mint --role operator
 
 ## RBAC in the UI
 
-The SPA decodes the bearer token payload (base64url, unverified) to read the
-`roles` field for client-side display gating only. The server always re-checks
-RBAC. Role mapping:
+For session logins the SPA reads roles from `GET /auth/me`; for bearer tokens
+it decodes the token payload (base64url, unverified). Either way this drives
+client-side display gating only — the server always re-checks RBAC. Role
+mapping:
 
 | Role | Read | Backup/Deploy/Clone/Restore | Admin ops (protected envs, promote) |
 |---|---|---|---|
