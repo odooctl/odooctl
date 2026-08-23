@@ -139,17 +139,15 @@ Odoo **17, 18, and 19** (Community) are integration-tested: a disposable-stack h
 Install the stable release from PyPI:
 
 ```bash
-pipx install 'odooctl==0.2.0'
-# or: uv tool install 'odooctl==0.2.0'
+pipx install 'odooctl==0.3.0'
+# or: uv tool install 'odooctl==0.3.0'
 odooctl --version
 ```
 
-`0.3.0b1` is an explicit prerelease opt-in; it is never the ordinary upgrade
-path for a stable installation. The host also needs Docker Engine with the
-Compose plugin and `tar`. With the recommended `execution_mode: docker`,
-PostgreSQL client tools run inside your DB container, so the host needs none.
-See [docs/installation.md](docs/installation.md) for beta upgrade and rollback
-commands.
+The host also needs Docker Engine with the Compose plugin and `tar`. With the
+recommended `execution_mode: docker`, PostgreSQL client tools run inside your
+DB container, so the host needs none. See
+[docs/installation.md](docs/installation.md) for upgrade and rollback commands.
 
 ## Development
 

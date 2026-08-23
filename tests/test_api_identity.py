@@ -420,8 +420,6 @@ def _api_routes(routes):
 
 def test_every_mutating_route_requires_authentication(app):
     """Phase-5 invariant: no API mutation without an authenticated principal."""
-    from fastapi.routing import APIRoute
-
     mutating = {"POST", "PUT", "PATCH", "DELETE"}
     checked = 0
     for route in _api_routes(app.routes):

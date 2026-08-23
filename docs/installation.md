@@ -9,19 +9,19 @@ Stable installs stay on the stable channel unless you explicitly request a
 prerelease. Do not use an unpinned beta in automation: pin the exact version
 and record it with the deployment or drill report.
 
-### Stable `0.2.0`
+### Stable `0.3.0`
 
 ```bash
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
-pipx install 'odooctl==0.2.0'
+pipx install 'odooctl==0.3.0'
 odooctl --version
 ```
 
 With uv instead:
 
 ```bash
-uv tool install 'odooctl==0.2.0'
+uv tool install 'odooctl==0.3.0'
 odooctl --version
 ```
 
@@ -44,7 +44,7 @@ stable command is unchanged.
 ### Return from beta to stable
 
 ```bash
-pipx install --force 'odooctl==0.2.0'
+pipx install --force 'odooctl==0.3.0'
 # or: uv tool install --force 'odooctl==0.2.0'
 odooctl --version
 ```

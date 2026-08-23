@@ -7,13 +7,13 @@ This guide takes a globally installed `odooctl` from zero to a first verified Do
 Install the current stable release from PyPI:
 
 ```bash
-pipx install 'odooctl==0.2.0'
-# or: uv tool install 'odooctl==0.2.0'
+pipx install 'odooctl==0.3.0'
+# or: uv tool install 'odooctl==0.3.0'
 odooctl --version
 ```
 
-The `0.3.0b1` beta is opt-in and never an implicit stable upgrade. Use the
-exact beta/rollback commands in [Installation](installation.md#release-channels).
+The `0.3.0b1` beta remains an immutable prerelease snapshot. Use the stable
+upgrade and rollback commands in [Installation](installation.md#release-channels).
 
 Install optional S3 support only when you need remote backup uploads:
 
