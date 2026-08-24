@@ -76,3 +76,26 @@ def test_build_rejects_source_version_mismatch(tmp_path: Path) -> None:
             assets_dir=tmp_path / "assets",
             apply_backports=True,
         )
+
+
+def test_pending_release_uses_last_published_stable_docs() -> None:
+    aliases, default = build_versioned_docs._resolve_aliases(
+        {"aliases": {"stable": "2.0.0"}, "default": "2.0.0"},
+        [
+            {"version": "1.0.0", "channel": "stable"},
+            {"version": "1.1.0b1", "channel": "beta"},
+        ],
+        {"2.0.0"},
+    )
+
+    assert aliases == {}
+    assert default == "1.0.0"
+
+
+def test_unknown_alias_still_fails_closed() -> None:
+    with pytest.raises(ValueError, match="alias 'stable' points to unknown"):
+        build_versioned_docs._resolve_aliases(
+            {"aliases": {"stable": "2.0.0"}, "default": "1.0.0"},
+            [{"version": "1.0.0", "channel": "stable"}],
+            set(),
+        )
