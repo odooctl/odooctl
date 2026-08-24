@@ -4,6 +4,9 @@ import pytest
 
 from odooctl.config import example_config, load_config
 from odooctl.odoo.sanitize import (
+    MECHANISM_NEUTRALIZE,
+    MECHANISM_SQL,
+    MECHANISM_SQL_FILES,
     default_sql,
     guarded_column_update,
     guarded_update,
@@ -25,6 +28,54 @@ def _config(tmp_path: Path):
     path = tmp_path / "odooctl.yml"
     path.write_text(example_config())
     return load_config(path)
+
+
+def test_sanitize_reports_sql_mechanism_without_neutralize(tmp_path: Path):
+    cfg = _config(tmp_path)
+    mechanisms = sanitize_database(FakePostgres(), "db", cfg.env("staging"), cfg, sql_files=[])
+    assert mechanisms == [MECHANISM_SQL]
+
+
+def test_sanitize_runs_neutralize_first_and_reports_it(tmp_path: Path):
+    cfg = _config(tmp_path)
+    order: list[str] = []
+
+    class RecordingPostgres:
+        def psql(self, db_name, sql):
+            order.append("psql")
+
+        def psql_file(self, db_name, sql_file):
+            order.append("psql_file")
+
+    sql_file = tmp_path / "extra.sql"
+    sql_file.write_text("UPDATE res_partner SET email = NULL;")
+    mechanisms = sanitize_database(
+        RecordingPostgres(),
+        "db",
+        cfg.env("staging"),
+        cfg,
+        sql_files=[sql_file],
+        neutralize=lambda db: order.append(f"neutralize:{db}"),
+    )
+    assert mechanisms == [MECHANISM_NEUTRALIZE, MECHANISM_SQL, MECHANISM_SQL_FILES]
+    # Upstream neutralize runs before any supplemental SQL, on the same DB.
+    assert order[0] == "neutralize:db"
+    assert order[-1] == "psql_file"
+
+
+def test_sanitize_validates_sql_files_before_any_mechanism_runs(tmp_path: Path):
+    cfg = _config(tmp_path)
+    ran: list[str] = []
+    with pytest.raises(FileNotFoundError):
+        sanitize_database(
+            FakePostgres(),
+            "db",
+            cfg.env("staging"),
+            cfg,
+            sql_files=[tmp_path / "missing.sql"],
+            neutralize=lambda db: ran.append(db),
+        )
+    assert ran == []
 
 
 def test_default_sanitization_disables_dangerous_integrations(tmp_path: Path):

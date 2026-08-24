@@ -18,6 +18,7 @@ from odooctl.operations.audit import AuditStore
 from odooctl.operations.engine import run_operation
 from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
+from odooctl.security.principals import local_actor
 
 app = typer.Typer(help="Manage named Odoo environments in this project.", add_completion=False)
 console = Console()
@@ -176,7 +177,7 @@ def create_env(
             kind=OperationKind.ENV_CREATE,
             project=svc_ctx.project.config.project.name,
             environment=name,
-            actor="cli",
+            actor=local_actor(),
             params_redacted={"name": name, "clone_from": clone_from},
             state_dir=svc_ctx.project.state_dir,
         ) as op_ctx:
@@ -262,7 +263,7 @@ def open_env(
             kind=OperationKind.ENV_CREATE,
             project=svc_ctx.project.config.project.name,
             environment=name,
-            actor="cli",
+            actor=local_actor(),
             params_redacted={"name": name, "from_env": from_env, "branch": from_branch},
             state_dir=svc_ctx.project.state_dir,
         ) as op_ctx:
@@ -300,7 +301,7 @@ def destroy_env(
             kind=OperationKind.ENV_DESTROY,
             project=cfg.project.name,
             environment=name,
-            actor="cli",
+            actor=local_actor(),
             params_redacted={"name": name, "purge": purge},
             state_dir=project_ctx.state_dir,
         ) as op_ctx:

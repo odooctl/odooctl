@@ -153,6 +153,20 @@ class BackupManifest(BaseModel):
     status: str = "complete"
 
 
+class CloneManifest(BaseModel):
+    schema_version: int = 1
+    project: str
+    source: str
+    target: str
+    timestamp: str = Field(default_factory=now_utc)
+    db_name: str
+    odoo_version: str
+    sanitized: bool
+    sanitization_profile: str | None = None
+    sanitization_mechanisms: list[str] = Field(default_factory=list)
+    status: str = "complete"
+
+
 class DeploymentMetadata(BaseModel):
     project: str
     environment: str

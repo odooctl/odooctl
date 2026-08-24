@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-23
+
+### Added
+
+- User accounts, browser sessions, role-capped user administration, project and
+  environment ownership, and actor attribution for API, web, and local CLI
+  operations.
+- Machine-local `odooctl.local.yml` overlays, pull-based `odooctl sync`, and
+  five-minute sync schedule defaults for systemd and cron.
+- Runner liveness, container status, redacted log-tail, and guarded restart
+  controls in the API and bundled web UI.
+
 ### Fixed
 
 - Web UI clone operations now identify the selected target as the operation
@@ -236,7 +248,8 @@ secret redaction, optional real S3 uploads, documentation, and tests.
 - `odooctl doctor` warns when referenced secrets are shorter than the
   configured minimum or fall on the redaction ignore list.
 
-[Unreleased]: https://github.com/odooctl/odooctl/compare/v0.3.0b1...HEAD
+[Unreleased]: https://github.com/odooctl/odooctl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/odooctl/odooctl/compare/v0.3.0b1...v0.3.0
 [0.3.0b1]: https://github.com/odooctl/odooctl/compare/v0.2.0...v0.3.0b1
 [0.2.0]: https://github.com/odooctl/odooctl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/odooctl/odooctl/releases/tag/v0.1.0

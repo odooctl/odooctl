@@ -7,6 +7,7 @@ from odooctl.operations.audit import AuditStore
 from odooctl.operations.engine import run_operation
 from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
+from odooctl.security.principals import local_actor
 
 
 def execute(
@@ -33,7 +34,7 @@ def execute(
         kind=OperationKind.CLONE,
         project=ctx.project.config.project.name,
         environment=target,
-        actor="cli",
+        actor=local_actor(),
         params_redacted={"source": source, "target": target, "profile": sanitization_profile},
         state_dir=ctx.project.state_dir,
     ) as op_ctx:
@@ -42,5 +43,6 @@ def execute(
             ctx, source, target,
             sanitize=sanitize, sanitization_profile=sanitization_profile, preview=False,
         )
-        op_ctx.emit(f"clone complete: {result.url}", phase="clone")
+        mechanisms = ", ".join(result.sanitization_mechanisms) or "none"
+        op_ctx.emit(f"clone complete: {result.url} (sanitization: {mechanisms})", phase="clone")
     return result.url  # type: ignore[union-attr]

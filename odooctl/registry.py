@@ -15,6 +15,9 @@ class RegisteredProject:
     name: str
     path: Path
     config: str = "odooctl.yml"
+    # Owning user/team (an email or team label) for "who owns what" queries.
+    # Informational attribution; RBAC roles still decide who may act.
+    owner: str = ""
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ def load_registry(path: str | Path | None = None) -> Registry:
             name=name,
             path=Path(str(raw["path"])).expanduser(),
             config=str(raw.get("config", "odooctl.yml")),
+            owner=str(raw.get("owner", "")),
         )
     active = data.get("active")
     if active is not None:
@@ -63,10 +67,13 @@ def save_registry(registry: Registry) -> None:
         lines.append("[projects]")
         for name in sorted(registry.projects):
             project = registry.projects[name]
-            lines.append(
+            entry = (
                 f'"{_toml_escape(name)}" = {{ path = "{_toml_escape(str(project.path))}", '
-                f'config = "{_toml_escape(project.config)}" }}'
+                f'config = "{_toml_escape(project.config)}"'
             )
+            if project.owner:
+                entry += f', owner = "{_toml_escape(project.owner)}"'
+            lines.append(entry + " }")
     registry.path.write_text("\n".join(lines).rstrip() + "\n")
 
 
@@ -104,14 +111,21 @@ def _contained_config_path(name: str, root: Path, config: str | Path) -> Path:
     return resolved
 
 
-def add_project(name: str, path: str | Path, config: str = "odooctl.yml", *, make_active: bool = True) -> RegisteredProject:
+def add_project(
+    name: str,
+    path: str | Path,
+    config: str = "odooctl.yml",
+    *,
+    make_active: bool = True,
+    owner: str = "",
+) -> RegisteredProject:
     _validate_project_name(name)
     registry = load_registry()
     root = Path(path).expanduser().resolve()
     resolved_config = _contained_config_path(name, root, config)
     if not resolved_config.exists():
         raise click.ClickException(f"Config file not found for project {name!r}: {resolved_config}")
-    project = RegisteredProject(name=name, path=root, config=str(config))
+    project = RegisteredProject(name=name, path=root, config=str(config), owner=owner)
     projects = dict(registry.projects)
     projects[name] = project
     active = name if make_active or registry.active is None else registry.active
@@ -129,6 +143,23 @@ def remove_project(name: str) -> None:
     if active == name:
         active = next(iter(sorted(projects)), None)
     save_registry(Registry(path=registry.path, active=active, projects=projects))
+
+
+def set_project_owner(
+    name: str, owner: str, *, registry_path: str | Path | None = None
+) -> RegisteredProject:
+    """Record the owning user/team for a registered project."""
+    import dataclasses
+
+    registry = load_registry(registry_path)
+    project = registry.projects.get(name)
+    if project is None:
+        raise click.ClickException(f"Unknown project: {name}")
+    updated = dataclasses.replace(project, owner=owner)
+    projects = dict(registry.projects)
+    projects[name] = updated
+    save_registry(Registry(path=registry.path, active=registry.active, projects=projects))
+    return updated
 
 
 def use_project(name: str) -> RegisteredProject:

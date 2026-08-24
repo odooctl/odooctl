@@ -33,6 +33,42 @@ def _load_versions(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    """Return whether *ref* resolves to a commit without treating it as a shell value."""
+    result = subprocess.run(
+        ("git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"),
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _resolve_aliases(
+    config: dict[str, Any],
+    versions: list[dict[str, str]],
+    pending_versions: set[str],
+) -> tuple[dict[str, str], str]:
+    """Resolve aliases, falling back only for explicitly pending release refs."""
+    by_version = {entry["version"]: entry for entry in versions}
+    aliases: dict[str, str] = {}
+    for channel, version in config.get("aliases", {}).items():
+        if version in by_version:
+            aliases[channel] = version
+        elif version not in pending_versions:
+            raise ValueError(f"alias {channel!r} points to unknown version {version!r}")
+
+    default_version = config.get("default")
+    if default_version in by_version:
+        return aliases, default_version
+    if default_version not in pending_versions:
+        raise ValueError(f"default documentation points to unknown version {default_version!r}")
+    for entry in reversed(versions):
+        if entry["channel"] == "stable":
+            return aliases, entry["version"]
+    raise ValueError("no published stable documentation is available while the release is pending")
+
+
 def _stage_docs(source: Path, support_root: Path) -> None:
     docs = source / "docs"
     for name in (
@@ -58,6 +94,22 @@ def _stage_docs(source: Path, support_root: Path) -> None:
         shutil.copy2(security, docs / "security-policy.md")
         for markdown in docs.rglob("*.md"):
             markdown.write_text(markdown.read_text().replace("SECURITY.md", "security-policy.md"))
+
+
+def _remove_pending_snapshot_links(source: Path, pending_versions: set[str]) -> None:
+    """Avoid dead immutable-snapshot links in development release-prep docs.
+
+    This is intentionally applied only while a manifest item is explicitly
+    pending and its tag is unavailable. Tagged release sources are untouched.
+    """
+    for markdown in (source / "docs").rglob("*.md"):
+        content = markdown.read_text()
+        for version in pending_versions:
+            content = content.replace(
+                f"[`{version}`](/docs/{version}/)",
+                f"`{version}` (pending release tag)",
+            )
+        markdown.write_text(content)
 
 
 def _replace_nav_path(value: Any, old: str, new: str) -> Any:
@@ -122,6 +174,7 @@ def build_one(
     commit: str,
     assets_dir: Path,
     apply_backports: bool,
+    pending_versions: set[str] | None = None,
 ) -> None:
     """Build one source checkout and fail if its package version is different."""
     package = tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"]
@@ -136,6 +189,7 @@ def build_one(
             ignore=shutil.ignore_patterns(".git", ".venv", "site", "dist", "build", "__pycache__", "*.pyc"),
         )
         _stage_docs(build_source, assets_dir.parent.parent)
+        _remove_pending_snapshot_links(build_source, pending_versions or set())
         if apply_backports:
             _apply_backport(build_source, version, assets_dir.parent.parent)
         checker = assets_dir.parent.parent / "scripts" / "check_documented_commands.py"
@@ -175,11 +229,17 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
     site_docs.mkdir(parents=True)
     published_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     versions: list[dict[str, str]] = []
+    pending_versions: set[str] = set()
 
     with tempfile.TemporaryDirectory(prefix="odooctl-docs-") as temp:
         worktree_root = Path(temp)
         for item in config["versions"]:
             version, channel, ref = item["version"], item["channel"], item["ref"]
+            if not _ref_exists(repo_root, ref):
+                if item.get("pending") is True:
+                    pending_versions.add(version)
+                    continue
+                raise ValueError(f"retained documentation ref does not exist: {ref}")
             source = worktree_root / version
             _run("git", "worktree", "add", "--detach", str(source), ref, cwd=repo_root)
             try:
@@ -199,6 +259,11 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
             finally:
                 _run("git", "worktree", "remove", "--force", str(source), cwd=repo_root)
 
+    # Resolve published aliases before adding development. During release
+    # preparation, the development checkout legitimately has the pending final
+    # package version, but it must never stand in for its immutable snapshot.
+    published_versions = list(versions)
+
     dev_version = tomllib.loads((repo_root / "pyproject.toml").read_text())["project"]["version"]
     dev_channel = config["development"]["channel"]
     dev_commit = _run("git", "rev-parse", "HEAD", cwd=repo_root)
@@ -211,19 +276,14 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
         commit=dev_commit,
         assets_dir=assets_dir,
         apply_backports=False,
+        pending_versions=pending_versions,
     )
     versions.append({"version": dev_version, "channel": dev_channel, "ref": "master", "commit": dev_commit,
                      "published_at": published_at, "canonical_url": f"/docs/{dev_channel}/"})
 
-    aliases = config.get("aliases", {})
-    by_version = {entry["version"]: entry for entry in versions}
+    aliases, default_version = _resolve_aliases(config, published_versions, pending_versions)
     for channel, version in aliases.items():
-        if version not in by_version:
-            raise ValueError(f"alias {channel!r} points to unknown version {version!r}")
         shutil.copytree(site_docs / version, site_docs / channel, dirs_exist_ok=True)
-    default_version = config.get("default")
-    if default_version not in by_version:
-        raise ValueError(f"default documentation points to unknown version {default_version!r}")
     # Preserve the original /docs/ entry point as a full stable copy. This is
     # intentionally done after building every version so the copy cannot hide
     # a failed retained build.

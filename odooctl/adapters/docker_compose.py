@@ -79,6 +79,41 @@ class DockerComposeAdapter:
     def ps(self) -> str:
         return run(self._cmd("ps"), cwd=self.project_dir, check=False).stdout
 
+    def ps_json(self) -> list[dict]:
+        """Return container records for this compose project.
+
+        ``docker compose ps --format json`` emits NDJSON (one object per line)
+        on Compose v2.21+, a JSON array on some older versions — parse both.
+        ``-a`` includes stopped/exited containers so the UI can show them.
+        """
+        import json
+
+        raw = run(self._cmd("ps", "-a", "--format", "json"), cwd=self.project_dir, check=False).stdout.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except ValueError:
+            records = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+            return records
+
+    def logs_capture(self, service: str, *, tail: int = 200) -> str:
+        """Return the last *tail* log lines for a service (no follow, no color)."""
+        return run(
+            self._cmd("logs", "--no-color", "--tail", str(tail), service),
+            cwd=self.project_dir,
+            check=False,
+        ).stdout
+
     def exec(
         self,
         service: str,

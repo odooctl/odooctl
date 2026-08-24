@@ -13,6 +13,7 @@ from odooctl.operations.audit import AuditStore
 from odooctl.operations.engine import run_operation
 from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
+from odooctl.security.principals import local_actor
 
 
 def execute_to(source_environment: str, target_environment: str, backup: str = "latest", config_path: str = "odooctl.yml") -> str:
@@ -27,7 +28,7 @@ def execute_to(source_environment: str, target_environment: str, backup: str = "
         kind=OperationKind.RESTORE,
         project=ctx.project.config.project.name,
         environment=target_environment,
-        actor="cli",
+        actor=local_actor(),
         params_redacted={"source": source_environment, "target": target_environment, "backup": backup},
         state_dir=ctx.project.state_dir,
     ) as op_ctx:
@@ -53,7 +54,7 @@ def execute(environment: str, backup: str = "latest", config_path: str = "odooct
         kind=OperationKind.RESTORE,
         project=ctx.project.config.project.name,
         environment=environment,
-        actor="cli",
+        actor=local_actor(),
         params_redacted={"environment": environment, "backup": backup},
         state_dir=ctx.project.state_dir,
     ) as op_ctx:

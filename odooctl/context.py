@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from odooctl.config import OdooCtlConfig, load_config
+from odooctl.config import OdooCtlConfig, load_config, local_overlay_path
 
 
 @dataclass(frozen=True)
@@ -16,11 +16,15 @@ class ProjectContext:
     an explicit root is provided. Relative runtime/state paths should be
     resolved through this object instead of the process current working
     directory.
+
+    ``overlay_path`` is the machine-local overlay (``odooctl.local.yml``) that
+    was merged into ``config``, or None when no overlay file exists.
     """
 
     root: Path
     config_path: Path
     config: OdooCtlConfig
+    overlay_path: Path | None = None
 
     @classmethod
     def from_config_path(cls, config_path: str | Path = "odooctl.yml", *, root: str | Path | None = None) -> "ProjectContext":
@@ -36,7 +40,10 @@ class ProjectContext:
 
         project_root = Path(root).expanduser().resolve() if root is not None else resolved_config.parent
         cfg = load_config(resolved_config)
-        return cls(root=project_root, config_path=resolved_config, config=cfg)
+        overlay = local_overlay_path(resolved_config)
+        if overlay is not None and not overlay.exists():
+            overlay = None
+        return cls(root=project_root, config_path=resolved_config, config=cfg, overlay_path=overlay)
 
     def resolve_path(self, value: str | Path) -> Path:
         path = Path(value).expanduser()

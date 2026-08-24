@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from odooctl.metadata.models import (
     BackupManifest,
+    CloneManifest,
     DeploymentMetadata,
     FilestoreMigrationManifest,
     PitrBaseBackupManifest,
@@ -23,6 +24,7 @@ class MetadataStore:
         self.root = ensure_dir(root)
         ensure_dir(self.root / "deployments")
         ensure_dir(self.root / "backups")
+        ensure_dir(self.root / "clones")
         ensure_dir(self.root / "sanitizations")
         ensure_dir(self.root / "snapshots")
         ensure_dir(self.root / "snapshots" / "restores")
@@ -64,6 +66,19 @@ class MetadataStore:
             payload,
         )
         return path
+
+    def save_clone_manifest(self, manifest: CloneManifest) -> Path:
+        """Persist a clone record without mixing it into backup metadata."""
+        timestamp = manifest.timestamp.replace(":", "")
+        payload = manifest.model_dump_json(indent=2)
+        path = self.root / "clones" / f"{manifest.target}-{timestamp}.json"
+        self._write_atomic(path, payload)
+        self._write_atomic(self.root / "clones" / f"{manifest.target}-latest.json", payload)
+        return path
+
+    def latest_clone(self, environment: str) -> dict | None:
+        path = self.root / "clones" / f"{environment}-latest.json"
+        return json.loads(path.read_text()) if path.exists() else None
 
     def update_backup_manifest(self, manifest: BackupManifest) -> Path:
         """Atomically update one backup index without moving ``latest`` backwards.

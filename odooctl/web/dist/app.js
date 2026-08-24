@@ -14,17 +14,24 @@
     var state = {
         token: localStorage.getItem('odooctl_token') || '',
         apiBase: localStorage.getItem('odooctl_api_base') || window.location.origin,
+        sessionUser: null,    // /auth/me result when signed in via session cookie
+        sessionChecked: false, // whether the boot-time cookie probe has run
+        runnerOnline: null,   // null = unknown, true/false once polled
+        runnerTimer: null,
     };
+
+    function isAuthed() { return !!(state.token || state.sessionUser); }
 
     // -------------------------------------------------------------------------
     // API client
     // -------------------------------------------------------------------------
     function apiFetch(path, options) {
         options = options || {};
-        var headers = Object.assign(
-            { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + state.token },
-            options.headers || {}
-        );
+        // Bearer token when one is set; otherwise the session cookie rides
+        // along automatically (same-origin fetch).
+        var base = { 'Content-Type': 'application/json' };
+        if (state.token) base['Authorization'] = 'Bearer ' + state.token;
+        var headers = Object.assign(base, options.headers || {});
         return fetch(state.apiBase + path, Object.assign({}, options, { headers: headers }))
             .then(function (resp) {
                 if (!resp.ok) {
@@ -56,6 +63,7 @@
     var RANK = { viewer: 0, operator: 1, admin: 2, owner: 3 };
 
     function getRoles() {
+        if (state.sessionUser && state.sessionUser.roles) return state.sessionUser.roles;
         var payload = decodePayload();
         return (payload && payload.roles) ? payload.roles : ['viewer'];
     }
@@ -92,17 +100,70 @@
         } catch (e) { return String(ts); }
     }
 
+    function runnerPillHtml() {
+        var cls, label, tip;
+        if (state.runnerOnline === true) {
+            cls = 'online'; label = 'Runner online';
+            tip = 'A runner is processing operations.';
+        } else if (state.runnerOnline === false) {
+            cls = 'offline'; label = 'Runner offline';
+            tip = 'No runner is processing operations — queued work will not run. Start one: odooctl runner';
+        } else {
+            cls = 'unknown'; label = 'Runner …';
+            tip = 'Checking runner status…';
+        }
+        return '<span class="runner-dot"></span>' + esc(label) +
+            '<span class="runner-tip">' + esc(tip) + '</span>';
+    }
+
     function renderHeader(title) {
-        var payload = decodePayload();
-        var sub = (payload && payload.sub) ? esc(payload.sub) : '';
+        var sub, exp = '';
+        if (state.sessionUser) {
+            sub = esc(state.sessionUser.display || state.sessionUser.id);
+        } else {
+            var payload = decodePayload();
+            sub = (payload && payload.sub) ? esc(payload.sub) : '';
+            if (payload && payload.exp) exp = ' &middot; expires ' + esc(formatTime(payload.exp));
+        }
         var roles = esc(getRoles().join(', '));
         return '<header class="top-bar">' +
             '<a class="logo" href="#/"><span class="logo-mark"></span>odooctl</a>' +
+            '<a class="top-link" href="#/access">Access</a>' +
             (title ? '<span>' + esc(title) + '</span>' : '') +
-            '<span class="user-info">' + (sub ? sub + ' &middot; ' : '') + roles + '</span>' +
+            '<span class="runner-pill runner-' + (state.runnerOnline === true ? 'online' : state.runnerOnline === false ? 'offline' : 'unknown') + '" id="runner-pill">' + runnerPillHtml() + '</span>' +
+            '<span class="user-info">' + (sub ? sub + ' &middot; ' : '') + roles + exp + '</span>' +
+            '<button class="btn btn-sm" id="refresh-btn" title="Refresh this page">&#8635;</button>' +
             '<button class="btn btn-sm" id="logout-btn">Sign out</button>' +
             '</header>' +
             '<div class="page-body">';
+    }
+
+    // Poll runner liveness and reflect it in the header pill. A missing/offline
+    // runner is the reason enqueued operations sit "queued", so we surface it
+    // prominently rather than letting the queue look broken.
+    function updateRunnerPillDom() {
+        var pill = document.getElementById('runner-pill');
+        if (!pill) return;
+        pill.className = 'runner-pill runner-' +
+            (state.runnerOnline === true ? 'online' : state.runnerOnline === false ? 'offline' : 'unknown');
+        pill.innerHTML = runnerPillHtml();
+    }
+
+    function pollRunner() {
+        if (!isAuthed()) return;
+        apiFetch('/runner/status').then(function (s) {
+            state.runnerOnline = !!s.online;
+            updateRunnerPillDom();
+        }).catch(function () {
+            // Leave the pill as-is on transient errors; auth errors are handled
+            // by the page fetches themselves.
+        });
+    }
+
+    function startRunnerPolling() {
+        if (state.runnerTimer) return;
+        pollRunner();
+        state.runnerTimer = setInterval(pollRunner, 5000);
     }
 
     function closePageBody() { return '</div>'; }
@@ -129,14 +190,30 @@
         var hash = window.location.hash.slice(1) || '/';
         var el = document.getElementById('app');
 
-        if (!state.token) {
+        if (!isAuthed()) {
+            // A session cookie may already exist (page reload): probe once
+            // before showing the login form.
+            if (!state.sessionChecked) {
+                state.sessionChecked = true;
+                el.innerHTML = '<div class="login-wrap">' + renderSpinner() + '</div>';
+                apiFetch('/auth/me').then(function (me) {
+                    if (me && me.session) state.sessionUser = me;
+                    route();
+                }).catch(function () { route(); });
+                return;
+            }
             renderLogin(el);
             return;
         }
 
+        startRunnerPolling();
+        stopContainerPolling();
+
         var m;
         if (hash === '/' || hash === '/projects') {
             renderProjects(el);
+        } else if (hash === '/access') {
+            renderAccess(el);
         } else if ((m = hash.match(/^\/project\/([^/]+)\/env\/([^/]+)$/))) {
             renderEnvDetail(el, decodeURIComponent(m[1]), decodeURIComponent(m[2]));
         } else if ((m = hash.match(/^\/project\/([^/]+)$/))) {
@@ -155,14 +232,45 @@
         el.innerHTML = '<div class="login-wrap"><div class="login-box">' +
             '<h1><span class="logo-mark logo-mark-lg"></span>odooctl Dashboard</h1>' +
             '<form id="login-form">' +
-            '<label>API Token<input type="password" id="token-input" placeholder="Paste your bearer token" required></label>' +
-            '<label>API Base URL<input type="text" id="base-input" value="' + esc(state.apiBase) + '"></label>' +
+            '<label>Email<input type="email" id="email-input" placeholder="you@example.com" autocomplete="username" required></label>' +
+            '<label>Password<input type="password" id="password-input" autocomplete="current-password" required></label>' +
             '<button type="submit" class="btn btn-primary">Sign in</button>' +
+            '<div id="login-error"></div>' +
             '</form>' +
-            '<p class="hint">Generate a token: <code>odooctl security token mint --role operator</code></p>' +
+            '<details class="login-alt"><summary>Sign in with an API token instead</summary>' +
+            '<form id="token-form">' +
+            '<label>API Token<input type="password" id="token-input" placeholder="Paste your bearer token"></label>' +
+            '<label>API Base URL<input type="text" id="base-input" value="' + esc(state.apiBase) + '"></label>' +
+            '<button type="submit" class="btn">Use token</button>' +
+            '</form>' +
+            '<p class="hint">Generate a token: <code>odooctl security token mint --action api --env \'*\' --project \'*\' --role operator</code></p>' +
+            '</details>' +
+            '<p class="hint">No account yet? Create one on the server: <code>odooctl user add you@example.com --role admin</code><br>' +
+            'Operations run only while a runner is active: <code>odooctl runner</code></p>' +
             '</div></div>';
 
         el.querySelector('#login-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var errBox = el.querySelector('#login-error');
+            errBox.innerHTML = '';
+            apiFetch('/auth/login', {
+                method: 'POST',
+                body: JSON.stringify({
+                    email: el.querySelector('#email-input').value.trim(),
+                    password: el.querySelector('#password-input').value,
+                }),
+            }).then(function () {
+                return apiFetch('/auth/me');
+            }).then(function (me) {
+                state.sessionUser = me;
+                window.location.hash = '#/';
+                route();
+            }).catch(function (err) {
+                errBox.innerHTML = renderAlert(err.message, 'error');
+            });
+        });
+
+        el.querySelector('#token-form').addEventListener('submit', function (e) {
             e.preventDefault();
             state.token = el.querySelector('#token-input').value.trim();
             state.apiBase = el.querySelector('#base-input').value.trim().replace(/\/$/, '');
@@ -203,6 +311,194 @@
     }
 
     // -------------------------------------------------------------------------
+    // Access page — RBAC matrix + admin token minting
+    // -------------------------------------------------------------------------
+    function renderAccess(el) {
+        el.innerHTML = renderHeader('Access') + renderSpinner() + closePageBody();
+
+        apiFetch('/rbac/matrix').then(function (data) {
+            var matrix = data.matrix || {};
+            var roleOrder = ['viewer', 'operator', 'admin', 'owner'];
+            var roles = roleOrder.filter(function (r) { return matrix[r]; });
+            var actions = roles.length ? Object.keys(matrix[roles[0]]) : [];
+            var myRoles = getRoles();
+            var destructive = data.destructive_on_protected || [];
+
+            var content = '<nav class="breadcrumb"><a href="#/">Dashboard</a> &rsaquo; Access</nav>';
+            content += '<h2>Your access</h2>';
+            content += '<p>Signed in as <strong>' +
+                esc(state.sessionUser ? (state.sessionUser.display || state.sessionUser.id) : 'token client') +
+                '</strong> with role(s): <strong>' + esc(myRoles.join(', ')) + '</strong>. ' +
+                (state.sessionUser
+                    ? 'Roles come from your user account; the server re-checks every request.'
+                    : 'Roles are carried inside the bearer token; the server re-checks every request.') + '</p>';
+
+            content += '<h2>Role &rarr; action matrix</h2>';
+            content += '<div class="matrix-wrap"><table class="ops-table rbac-matrix"><tr><th>Action</th>';
+            roles.forEach(function (r) {
+                var mine = myRoles.indexOf(r) !== -1;
+                content += '<th' + (mine ? ' class="my-role" title="Your role"' : '') + '>' + esc(r) + (mine ? ' •' : '') + '</th>';
+            });
+            content += '</tr>';
+            actions.forEach(function (a) {
+                var prot = destructive.indexOf(a) !== -1;
+                content += '<tr><td>' + esc(a) + (prot ? ' <span class="badge protected" title="On a protected environment this action requires admin or higher">🔒</span>' : '') + '</td>';
+                roles.forEach(function (r) {
+                    var ok = !!matrix[r][a];
+                    content += '<td class="' + (ok ? 'cell-yes' : 'cell-no') + '">' + (ok ? '&#10003;' : '&mdash;') + '</td>';
+                });
+                content += '</tr>';
+            });
+            content += '</table></div>';
+            content += '<p class="text-muted">🔒 = on a <em>protected</em> environment (production, or <code>tier: production</code>) ' +
+                'this action additionally requires <strong>admin</strong> or higher, regardless of the base matrix. ' +
+                'Restarting shared containers counts as protected whenever any environment in the project is protected.</p>';
+
+            content += '<h2>Issue access tokens</h2>';
+            if (isAdmin()) {
+                content += '<div class="op-form" id="mint-form">' +
+                    '<p>Mint a scoped bearer token for a teammate. The minted role cannot exceed your own, ' +
+                    'TTL is capped at 7 days, and the token is shown once — it is never stored server-side.</p>' +
+                    '<label>Role:<select id="mint-role">' +
+                        '<option value="viewer">viewer — read-only</option>' +
+                        '<option value="operator">operator — backup/clone/restore on non-protected envs</option>' +
+                        '<option value="admin">admin — full control incl. protected envs</option>' +
+                    '</select></label>' +
+                    '<label>Valid for:<select id="mint-ttl">' +
+                        '<option value="3600">1 hour</option>' +
+                        '<option value="86400" selected>24 hours</option>' +
+                        '<option value="604800">7 days</option>' +
+                    '</select></label>' +
+                    '<label>Project scope:<input type="text" id="mint-project" value="*" autocomplete="off"></label>' +
+                    '<label>Subject (who is this for):<input type="text" id="mint-subject" placeholder="e.g. alice" autocomplete="off"></label>' +
+                    '<div class="tab-actions mt-2"><button class="btn btn-primary" id="mint-btn">Mint token</button></div>' +
+                    '<div id="mint-result"></div>' +
+                    '</div>';
+            } else {
+                content += renderAlert('Admin role required to mint tokens. Ask an admin, or mint from the server shell: odooctl security token mint --action api --env \'*\' --project \'*\' --role <role>', 'info');
+            }
+
+            content += '<h2>User accounts</h2>';
+            if (isAdmin()) {
+                content += '<div id="users-panel">' + renderSpinner() + '</div>';
+            } else {
+                content += renderAlert('Admin role required to manage user accounts.', 'info');
+            }
+
+            el.innerHTML = renderHeader('Access') + content + closePageBody();
+            if (isAdmin()) loadUsersPanel(el);
+
+            var mintBtn = el.querySelector('#mint-btn');
+            if (mintBtn) {
+                mintBtn.addEventListener('click', function () {
+                    var payload = {
+                        role: el.querySelector('#mint-role').value,
+                        ttl_seconds: parseInt(el.querySelector('#mint-ttl').value, 10),
+                        project: el.querySelector('#mint-project').value.trim() || '*',
+                        subject: el.querySelector('#mint-subject').value.trim() || undefined,
+                    };
+                    apiFetch('/tokens', { method: 'POST', body: JSON.stringify(payload) }).then(function (res) {
+                        var box = el.querySelector('#mint-result');
+                        box.innerHTML = '<div class="token-box">' +
+                            '<p><strong>' + esc(res.role) + '</strong> token for <code>' + esc(res.subject) + '</code> ' +
+                            '(project ' + esc(res.project) + ', ' + esc(String(Math.round(res.ttl_seconds / 3600))) + 'h). Copy it now — it is shown once:</p>' +
+                            '<textarea readonly rows="3" id="minted-token">' + esc(res.token) + '</textarea>' +
+                            '<button class="btn btn-sm" id="copy-token-btn">Copy</button>' +
+                            '</div>';
+                        box.querySelector('#copy-token-btn').addEventListener('click', function () {
+                            var ta = box.querySelector('#minted-token');
+                            ta.select();
+                            try { document.execCommand('copy'); showToast('Token copied.', 'success'); } catch (e) { /* manual copy */ }
+                        });
+                    }).catch(function (err) {
+                        showToast('Mint failed: ' + err.message, 'error');
+                    });
+                });
+            }
+        }).catch(function (err) {
+            el.innerHTML = renderHeader('Access') + renderErrorAlert(err) + closePageBody();
+        });
+    }
+
+    // Users panel on the Access page: list, create, disable/enable, delete.
+    // Server enforces the role ceiling and self-guards; UI just surfaces errors.
+    function loadUsersPanel(el) {
+        var panel = el.querySelector('#users-panel');
+        if (!panel) return;
+        apiFetch('/users').then(function (data) {
+            var users = data.users || [];
+            var html = '';
+            if (!users.length) {
+                html += '<p class="text-muted">No user accounts yet. Accounts let teammates sign in ' +
+                    'with email + password instead of pasted tokens.</p>';
+            } else {
+                html += '<table class="ops-table"><tr><th>Email</th><th>Name</th><th>Roles</th><th>Status</th><th></th></tr>';
+                users.forEach(function (u) {
+                    html += '<tr>' +
+                        '<td>' + esc(u.email) + '</td>' +
+                        '<td>' + esc(u.name || '—') + '</td>' +
+                        '<td>' + esc((u.roles || []).join(', ') || '—') + '</td>' +
+                        '<td>' + (u.disabled ? '<span class="badge protected">disabled</span>' : 'active') + '</td>' +
+                        '<td class="ta-right">' +
+                        '<button class="btn btn-sm" data-user-action="' + (u.disabled ? 'enable' : 'disable') + '" data-user-id="' + esc(u.id) + '">' + (u.disabled ? 'Enable' : 'Disable') + '</button> ' +
+                        '<button class="btn btn-sm" data-user-action="delete" data-user-id="' + esc(u.id) + '" data-user-email="' + esc(u.email) + '">Delete</button>' +
+                        '</td></tr>';
+                });
+                html += '</table>';
+            }
+            html += '<div class="op-form mt-2" id="user-create-form">' +
+                '<p>Create an account. The granted role cannot exceed your own.</p>' +
+                '<label>Email:<input type="email" id="new-user-email" autocomplete="off"></label>' +
+                '<label>Password:<input type="password" id="new-user-password" autocomplete="new-password" placeholder="min 8 characters"></label>' +
+                '<label>Role:<select id="new-user-role">' +
+                    '<option value="viewer">viewer</option>' +
+                    '<option value="operator">operator</option>' +
+                    '<option value="admin">admin</option>' +
+                '</select></label>' +
+                '<div class="tab-actions mt-2"><button class="btn btn-primary" id="create-user-btn">Create user</button></div>' +
+                '</div>';
+            panel.innerHTML = html;
+
+            panel.querySelector('#create-user-btn').addEventListener('click', function () {
+                apiFetch('/users', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        email: panel.querySelector('#new-user-email').value.trim(),
+                        password: panel.querySelector('#new-user-password').value,
+                        roles: [panel.querySelector('#new-user-role').value],
+                    }),
+                }).then(function () {
+                    showToast('User created.', 'success');
+                    loadUsersPanel(el);
+                }).catch(function (err) {
+                    showToast('Create failed: ' + err.message, 'error');
+                });
+            });
+
+            panel.querySelectorAll('[data-user-action]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var action = btn.getAttribute('data-user-action');
+                    var uid = btn.getAttribute('data-user-id');
+                    var req;
+                    if (action === 'delete') {
+                        if (!window.confirm('Delete user ' + btn.getAttribute('data-user-email') + '?')) return;
+                        req = apiFetch('/users/' + encodeURIComponent(uid), { method: 'DELETE' });
+                    } else {
+                        req = apiFetch('/users/' + encodeURIComponent(uid), {
+                            method: 'PATCH',
+                            body: JSON.stringify({ disabled: action === 'disable' }),
+                        });
+                    }
+                    req.then(function () { loadUsersPanel(el); })
+                        .catch(function (err) { showToast('Failed: ' + err.message, 'error'); });
+                });
+            });
+        }).catch(function (err) {
+            panel.innerHTML = renderErrorAlert(err);
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // Project detail page
     // -------------------------------------------------------------------------
     function renderProject(el, project) {
@@ -211,15 +507,20 @@
         Promise.all([
             apiFetch('/projects/' + encodeURIComponent(project) + '/environments'),
             apiFetch('/projects/' + encodeURIComponent(project) + '/status'),
+            apiFetch('/projects/' + encodeURIComponent(project)),
         ]).then(function (results) {
             var envsData = results[0];
             var statusData = results[1];
+            var projectInfo = results[2] || {};
             var envs = envsData.environments || [];
             var statusByEnv = {};
             (statusData.environments || []).forEach(function (e) { statusByEnv[e.name] = e; });
             var recentOps = statusData.recent_operations || [];
 
             var content = '<nav class="breadcrumb"><a href="#/">Dashboard</a> &rsaquo; ' + esc(project) + '</nav>';
+            if (projectInfo.owner) {
+                content += '<p class="text-muted">Owner: <strong>' + esc(projectInfo.owner) + '</strong></p>';
+            }
             content += '<h2>Environments</h2>';
 
             if (!envs.length) {
@@ -239,6 +540,7 @@
                         '<span>Branch: ' + esc(env.branch || '—') + '</span>' +
                         '<span>Backup: ' + esc(st.latest_backup || 'none') + '</span>' +
                         '<span>Deploy: ' + esc(st.last_deployment_status || '—') + '</span>' +
+                        (env.owner ? '<span>Owner: ' + esc(env.owner) + '</span>' : '') +
                         '</div>' +
                         '<div class="env-actions">' +
                         '<a class="btn btn-sm" href="#/project/' + encodeURIComponent(project) + '/env/' + encodeURIComponent(env.name) + '">Details</a>' +
@@ -248,6 +550,12 @@
                 });
                 content += '</div>';
             }
+
+            // Shared compose stack: live status + logs/restart per service.
+            var projectProtected = envs.some(function (e) { return !!e.protected; });
+            var canRestart = isOperator() && (!projectProtected || isAdmin());
+            var firstEnv = envs.length ? envs[0].name : 'production';
+            content += '<h2>Containers</h2><div id="containers-panel">' + renderSpinner() + '</div>';
 
             content += '<h2>Recent Operations</h2>';
             if (!recentOps.length) {
@@ -261,6 +569,10 @@
 
             el.innerHTML = renderHeader(project) + content + closePageBody();
             attachOpsTableEvents(el);
+            loadContainersPanel(project, 'containers-panel', firstEnv, {
+                canRestart: canRestart,
+                restartBlocked: projectProtected && isOperator() && !isAdmin(),
+            });
             el.querySelectorAll('[data-action="backup"]').forEach(function (btn) {
                 btn.addEventListener('click', function () {
                     var proj = btn.dataset.project;
@@ -318,8 +630,12 @@
                 (isProtected ? ' <span class="badge protected">🔒 protected</span>' : '') +
                 '</nav>';
 
+            var projectProtected = envs.some(function (e) { return !!e.protected; });
+            var canRestartSvc = isOperator() && (!projectProtected || isAdmin());
+
             var tabs = '<div class="tabs">' +
                 '<button class="tab active" data-tab="overview">Overview</button>' +
+                '<button class="tab" data-tab="containers">Containers</button>' +
                 '<button class="tab" data-tab="doctor">Doctor</button>' +
                 '<button class="tab" data-tab="operations">Operations</button>' +
                 '<button class="tab" data-tab="backups">Backups</button>' +
@@ -344,10 +660,17 @@
                 tab.addEventListener('click', function () {
                     el.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
                     tab.classList.add('active');
+                    stopContainerPolling();
                     var content = document.getElementById('tab-content');
                     var tabName = tab.dataset.tab;
                     if (tabName === 'overview') {
                         content.innerHTML = buildOverviewTab(envCfg, statusEnv);
+                    } else if (tabName === 'containers') {
+                        content.innerHTML = '<div id="containers-panel-env">' + renderSpinner() + '</div>';
+                        loadContainersPanel(project, 'containers-panel-env', env, {
+                            canRestart: canRestartSvc,
+                            restartBlocked: projectProtected && isOperator() && !isAdmin(),
+                        });
                     } else if (tabName === 'doctor') {
                         content.innerHTML = buildDoctorTab(envCfg, statusEnv);
                     } else if (tabName === 'operations') {
@@ -416,25 +739,58 @@
     }
 
     function buildOpsTable(ops) {
+        var queuedOffline = state.runnerOnline === false && ops.some(function (op) { return op.status === 'queued'; });
+        var banner = queuedOffline ? runnerOfflineBanner() : '';
         var rows = ops.map(function (op) {
+            var actions = '<button class="btn btn-sm" data-action="stream-op" data-op-id="' + esc(op.op_id) + '">Logs</button>';
+            if (op.status === 'queued') {
+                actions += ' <button class="btn btn-sm btn-danger" data-action="cancel-op" data-op-id="' + esc(op.op_id) + '">Cancel</button>';
+            }
             return '<tr' + (op.status === 'running' ? ' class="op-running"' : '') + '>' +
                 '<td><code>' + esc(op.op_id.slice(0, 8)) + '&hellip;</code></td>' +
                 '<td>' + esc(op.kind) + '</td>' +
                 '<td>' + esc(op.environment) + '</td>' +
                 '<td><span class="badge status-' + esc(op.status) + '">' + esc(op.status) + '</span></td>' +
                 '<td>' + esc(formatTime(op.created_at)) + '</td>' +
-                '<td><button class="btn btn-sm" data-action="stream-op" data-op-id="' + esc(op.op_id) + '">Logs</button></td>' +
+                '<td class="op-actions">' + actions + '</td>' +
                 '</tr>';
         }).join('');
-        return '<table class="ops-table">' +
+        return banner + '<table class="ops-table">' +
             '<tr><th>ID</th><th>Kind</th><th>Env</th><th>Status</th><th>Created</th><th></th></tr>' +
             rows + '</table>';
+    }
+
+    // Explains why queued operations are not progressing, with the exact fix.
+    function runnerOfflineBanner() {
+        return '<div class="alert warning runner-banner">' +
+            'No runner is processing operations, so queued work will not run. ' +
+            'Start one on the server: <code>odooctl runner</code>' +
+            '</div>';
     }
 
     function attachOpsTableEvents(container) {
         container.querySelectorAll('[data-action="stream-op"]').forEach(function (btn) {
             btn.addEventListener('click', function () { showOpLogs(btn.dataset.opId); });
         });
+        container.querySelectorAll('[data-action="cancel-op"]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var opId = btn.dataset.opId;
+                confirmAndRun(
+                    'Cancel queued operation <code>' + esc(opId.slice(0, 8)) + '…</code>?',
+                    'cancel',
+                    function () { cancelOp(opId); }
+                );
+            });
+        });
+    }
+
+    function cancelOp(opId) {
+        apiFetch('/operations/' + encodeURIComponent(opId) + '/cancel', { method: 'POST' })
+            .then(function (res) {
+                showToast('Operation ' + opId.slice(0, 8) + '… ' + (res.status || 'cancelled') + '.', 'success');
+                route();
+            })
+            .catch(function (err) { showToast('Cancel failed: ' + err.message, 'error'); });
     }
 
     function buildBackupsTab(backups, canWrite) {
@@ -653,6 +1009,111 @@
     }
 
     // -------------------------------------------------------------------------
+    // Containers panel (live status from the runner's snapshot; logs/restart
+    // go through the queue like every other privileged action)
+    // -------------------------------------------------------------------------
+    function stopContainerPolling() {
+        if (state.containersTimer) { clearTimeout(state.containersTimer); state.containersTimer = null; }
+    }
+
+    function stateBadgeClass(c) {
+        var s = (c.state || '').toLowerCase();
+        var h = (c.health || '').toLowerCase();
+        if (h === 'unhealthy' || s === 'exited' || s === 'dead') return 'failed';
+        if (s === 'running') return 'succeeded';
+        if (s === 'restarting' || s === 'created' || s === 'paused') return 'queued';
+        return 'queued';
+    }
+
+    function buildContainersPanel(snapshot, opts) {
+        var content = '';
+        if (!snapshot.available) {
+            content += renderAlert(
+                'No container status yet — a runner probes the stack every few seconds. Start one: odooctl runner',
+                'warning'
+            );
+            return content;
+        }
+        if (snapshot.stale) {
+            content += renderAlert(
+                'Container status is stale (last probe ' + esc(String(Math.round(snapshot.age_seconds || 0))) + 's ago) — is the runner still running?',
+                'warning'
+            );
+        }
+        if (snapshot.error) {
+            content += renderAlert('Last probe error: ' + esc(snapshot.error), 'error');
+        }
+        var containers = snapshot.containers || [];
+        if (!containers.length) {
+            content += renderEmptyState('No containers found for this project’s compose stack.', 'docker compose up -d');
+            return content;
+        }
+        var rows = containers.map(function (c) {
+            var actions = '<button class="btn btn-sm" data-action="svc-logs" data-service="' + esc(c.service) + '">Logs</button>';
+            if (opts.canRestart) {
+                actions += ' <button class="btn btn-sm btn-danger" data-action="svc-restart" data-service="' + esc(c.service) + '">Restart</button>';
+            }
+            return '<tr>' +
+                '<td><strong>' + esc(c.service) + '</strong></td>' +
+                '<td><span class="badge status-' + stateBadgeClass(c) + '">' + esc(c.state || '?') + (c.health ? ' (' + esc(c.health) + ')' : '') + '</span></td>' +
+                '<td>' + esc(c.status || '—') + '</td>' +
+                '<td><code>' + esc(c.image || '—') + '</code></td>' +
+                '<td class="op-actions">' + actions + '</td>' +
+                '</tr>';
+        }).join('');
+        content += '<table class="ops-table">' +
+            '<tr><th>Service</th><th>State</th><th>Uptime</th><th>Image</th><th></th></tr>' + rows + '</table>' +
+            '<p class="text-muted containers-note">One compose stack serves every environment of this project — ' +
+            'restarting a service affects all of them.' +
+            (opts.restartBlocked ? ' Restart requires the admin role because this project has a protected environment.' : '') +
+            '</p>';
+        return content;
+    }
+
+    function attachContainersPanel(container, project, envName) {
+        container.querySelectorAll('[data-action="svc-logs"]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                enqueueOp(project, {
+                    kind: 'service_logs',
+                    environment: envName,
+                    params: { service: btn.dataset.service, tail: 200 }
+                });
+            });
+        });
+        container.querySelectorAll('[data-action="svc-restart"]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var svc = btn.dataset.service;
+                confirmAndRun(
+                    'Restart service <strong>' + esc(svc) + '</strong>?<br>' +
+                    '<span class="text-muted">The shared container serves every environment of this project.</span>',
+                    'restart',
+                    function () {
+                        enqueueOp(project, { kind: 'service_restart', environment: envName, params: { service: svc } });
+                    }
+                );
+            });
+        });
+    }
+
+    function loadContainersPanel(project, panelId, envName, opts) {
+        var panel = document.getElementById(panelId);
+        if (!panel) return;
+        apiFetch('/projects/' + encodeURIComponent(project) + '/containers').then(function (snapshot) {
+            var el = document.getElementById(panelId);
+            if (!el) return; // navigated away
+            el.innerHTML = buildContainersPanel(snapshot, opts);
+            attachContainersPanel(el, project, envName);
+            stopContainerPolling();
+            state.containersTimer = setTimeout(function () {
+                loadContainersPanel(project, panelId, envName, opts);
+            }, 10000);
+        }).catch(function (err) {
+            var el = document.getElementById(panelId);
+            if (el) el.innerHTML = renderErrorAlert(err);
+        });
+    }
+
+    // -------------------------------------------------------------------------
     // Enqueue operation
     // -------------------------------------------------------------------------
     function enqueueOp(project, body) {
@@ -660,7 +1121,11 @@
             method: 'POST',
             body: JSON.stringify(body),
         }).then(function (result) {
-            showToast('Operation ' + result.op_id.slice(0, 8) + '… queued.', 'success');
+            if (state.runnerOnline === false) {
+                showToast('Operation ' + result.op_id.slice(0, 8) + '… queued, but no runner is running — start "odooctl runner".', 'warning');
+            } else {
+                showToast('Operation ' + result.op_id.slice(0, 8) + '… queued.', 'success');
+            }
             showOpLogs(result.op_id);
         }).catch(function (err) {
             showToast('Error: ' + err.message, 'error');
@@ -690,6 +1155,13 @@
         var logLines = overlay.querySelector('#log-lines');
         var logStatus = overlay.querySelector('#log-status');
 
+        if (state.runnerOnline === false) {
+            var hint = document.createElement('div');
+            hint.className = 'log-line log-warning';
+            hint.textContent = 'No runner is running — this operation will stay queued until you start one: odooctl runner';
+            logLines.appendChild(hint);
+        }
+
         function appendLine(event) {
             var line = document.createElement('div');
             var type = event.type || 'log';
@@ -701,16 +1173,22 @@
         }
 
         function setStatus(text, cls) {
-            logStatus.innerHTML = text;
+            logStatus.innerHTML = esc(text);
             if (cls) logStatus.className = 'log-status badge status-' + cls;
+            // A terminal-looking stream that ends still "queued" means nothing
+            // consumed it — point the operator at the runner.
+            if (String(text).toLowerCase() === 'queued') {
+                logStatus.innerHTML = 'queued — no runner consumed this yet. Start one: <code>odooctl runner</code>';
+            }
         }
 
         streamEvents(opId, appendLine, setStatus);
     }
 
     function streamEvents(opId, onEvent, onDone) {
+        var headers = state.token ? { 'Authorization': 'Bearer ' + state.token } : {};
         fetch(state.apiBase + '/operations/' + encodeURIComponent(opId) + '/events', {
-            headers: { 'Authorization': 'Bearer ' + state.token },
+            headers: headers,
         }).then(function (resp) {
             if (!resp.ok) { onDone('Connection failed (' + resp.status + ')', 'failed'); return; }
             var reader = resp.body.getReader();
@@ -807,10 +1285,27 @@
     // Global click delegation (logout, etc.)
     // -------------------------------------------------------------------------
     document.addEventListener('click', function (evt) {
-        if (evt.target && evt.target.id === 'logout-btn') {
-            state.token = '';
-            localStorage.removeItem('odooctl_token');
-            window.location.hash = '#/';
+        var target = evt.target;
+        // Allow clicks on the icon/inner span of a button to still resolve.
+        var btn = target && target.closest ? target.closest('button') : target;
+        var id = (btn && btn.id) || (target && target.id);
+        if (id === 'logout-btn') {
+            var finishLogout = function () {
+                state.token = '';
+                state.sessionUser = null;
+                localStorage.removeItem('odooctl_token');
+                if (state.runnerTimer) { clearInterval(state.runnerTimer); state.runnerTimer = null; }
+                state.runnerOnline = null;
+                window.location.hash = '#/';
+                route();
+            };
+            if (state.sessionUser) {
+                apiFetch('/auth/logout', { method: 'POST' }).then(finishLogout, finishLogout);
+            } else {
+                finishLogout();
+            }
+        } else if (id === 'refresh-btn') {
+            pollRunner();
             route();
         }
     });

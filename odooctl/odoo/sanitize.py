@@ -1,8 +1,13 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 from odooctl.config import OdooCtlConfig, EnvironmentConfig
 from odooctl.adapters.reverse_proxy import public_url
+
+# Sanitization mechanisms recorded in clone manifests.
+MECHANISM_NEUTRALIZE = "odoo-neutralize"
+MECHANISM_SQL = "odooctl-sql"
+MECHANISM_SQL_FILES = "custom-sql-files"
 
 
 class PsqlAdapter(Protocol):
@@ -325,11 +330,28 @@ def sanitize_database(
     profile: str = "normal",
     *,
     sql_files: list[Path] | None = None,
-) -> None:
-    for sql in profile_sql(profile, env, config):
-        pg.psql(db_name, sql)
+    neutralize: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Sanitize *db_name* and return the list of mechanisms that ran.
+
+    When a *neutralize* runner is given it runs first (Odoo's own upstream
+    neutralization); the profile SQL then acts as a supplement covering what
+    upstream does not (third-party modules, ir_config_parameter secrets, base
+    URL rewrite) and remains the primary mechanism on pre-16 databases.
+    """
     paths = sql_files if sql_files is not None else [Path(file_name) for file_name in config.sanitization.sql_files]
     for path in paths:
         if not path.exists():
             raise FileNotFoundError(f"Configured sanitization SQL file does not exist: {path}")
+    mechanisms: list[str] = []
+    if neutralize is not None:
+        neutralize(db_name)
+        mechanisms.append(MECHANISM_NEUTRALIZE)
+    for sql in profile_sql(profile, env, config):
+        pg.psql(db_name, sql)
+    mechanisms.append(MECHANISM_SQL)
+    for path in paths:
         pg.psql_file(db_name, path)
+    if paths:
+        mechanisms.append(MECHANISM_SQL_FILES)
+    return mechanisms

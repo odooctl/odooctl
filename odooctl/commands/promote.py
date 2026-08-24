@@ -9,6 +9,7 @@ from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
 from odooctl.services.context import ServiceContext
 from odooctl.services.promote import promote_preview, run_promote
+from odooctl.security.principals import local_actor
 
 app = typer.Typer(help="Promote an environment to its configured target.", add_completion=False)
 
@@ -36,7 +37,7 @@ def execute(
         kind=OperationKind.PROMOTE,
         project=cfg.project.name,
         environment=target,
-        actor="cli",
+        actor=local_actor(),
         params_redacted={"source": source, "target": target},
         state_dir=ctx.project.state_dir,
     ) as op_ctx:

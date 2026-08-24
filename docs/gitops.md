@@ -10,7 +10,7 @@ gitops:
   preview_base_domain: preview.example.com
   preview_source_environment: staging
   preview_ttl_hours: 24
-  initializer_image: registry.example.com/platform/odooctl:0.3.0b1
+  initializer_image: registry.example.com/platform/odooctl:0.3.0
   preview_image_template: "registry.example.com/acme/odoo:pr-{revision}"
 ```
 

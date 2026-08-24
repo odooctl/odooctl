@@ -96,6 +96,8 @@ host-level judgment — and the runner marks them `failed` at dispatch time
 | `pitr_cutover`      | yes              | —                              |
 | `filestore_migrate` | yes              | —                              |
 | `migrate_rehearsal` | yes              | —                              |
+| `service_logs`      | yes              | `odooctl logs` (CLI streams)   |
+| `service_restart`   | yes              | `docker compose restart`       |
 | `restore`           | no (CLI-only)    | `odooctl restore`              |
 | `deploy`            | no (CLI-only)    | `odooctl deploy`               |
 | `promote`           | no (CLI-only)    | `odooctl promote`              |
@@ -103,6 +105,37 @@ host-level judgment — and the runner marks them `failed` at dispatch time
 | `env_destroy`       | no (CLI-only)    | `odooctl env destroy`          |
 | `update_modules`    | no (CLI-only)    | `odooctl update-modules`       |
 | `rollback`          | no (CLI-only)    | `odooctl rollback`             |
+
+`service_logs` (viewer-allowed) captures a redacted `docker compose logs
+--tail` for one configured service and streams it back as operation events.
+`service_restart` is gated like a deploy, with one extra rule: because compose
+services are shared by every environment in a project, restart counts as
+*protected* whenever **any** environment in the project is protected
+(`rbac.kind_protected`), so an operator cannot bounce production's container
+by naming staging. Both kinds validate the `service` param against the
+configured odoo/postgres service names only.
+
+## Container-status snapshots
+
+Alongside the heartbeat, the runner probes `docker compose ps -a --format
+json` for every registered project every 10 s and writes a normalized
+snapshot to `<state_dir>/container-status.json`
+(`odooctl/operations/container_status.py`, stdlib-only). The API serves it at
+`GET /projects/{p}/containers`; a snapshot older than 30 s is flagged stale.
+Probe failures are recorded in the snapshot's `error` field (redacted) rather
+than crashing the loop.
+
+## Runner liveness heartbeat
+
+While looping, the runner refreshes a heartbeat file
+(`runner-heartbeat.json`, next to the global registry) on every iteration —
+`{pid, ts, started_at}`. The unprivileged API reads it via
+`GET /runner/status` and reports `online: false` when it is missing or older
+than 15 s. This is how the web UI knows whether enqueued operations will
+actually be processed. The heartbeat helper
+(`odooctl/operations/runner_heartbeat.py`) is stdlib-only and lives in the
+shared `operations` package so the API can read it without importing anything
+from the privileged `runner` package (preserving the boundary above).
 
 ## Capability tokens across the boundary
 

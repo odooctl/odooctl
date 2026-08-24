@@ -100,6 +100,11 @@ code {
 .login-box input { width: 100%; padding: 0.55rem 0.8rem; border: 1px solid var(--border); border-radius: 5px; font-size: 0.95rem; }
 .login-box button[type=submit] { width: 100%; margin-top: 1.25rem; padding: 0.65rem; }
 .hint { font-size: 0.82rem; color: var(--muted); margin-top: 1rem; }
+.login-alt { margin-top: 1.25rem; border-top: 1px solid var(--border); padding-top: 0.9rem; }
+.login-alt summary { font-size: 0.85rem; color: var(--muted); cursor: pointer; }
+.login-alt button[type=submit] { width: auto; padding: 0.5rem 1rem; }
+#login-error .alert { margin-top: 0.9rem; }
+.ta-right { text-align: right; }
 
 /* ---- Headings ---- */
 h2 { font-size: 1.15rem; margin: 1.5rem 0 0.6rem; color: var(--text); }
@@ -432,3 +437,77 @@ h3 { font-size: 1rem; margin-bottom: 0.5rem; }
     .ops-table { font-size: 0.8rem; }
     .top-bar { padding: 0.6rem 1rem; }
 }
+
+/* ---- Runner status pill (header) ---- */
+.runner-pill {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+    cursor: default;
+    white-space: nowrap;
+}
+.runner-pill .runner-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #bbb; flex: 0 0 auto;
+}
+.runner-online  .runner-dot { background: var(--success); box-shadow: 0 0 0 2px rgba(40,167,69,.35); }
+.runner-offline .runner-dot { background: var(--danger);  box-shadow: 0 0 0 2px rgba(220,53,69,.35); }
+.runner-offline { background: rgba(220,53,69,0.25); }
+.runner-unknown .runner-dot { animation: runner-pulse 1.2s ease-in-out infinite; }
+@keyframes runner-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+.runner-tip {
+    display: none;
+    position: absolute;
+    top: 130%; left: 0;
+    background: #222; color: #fff;
+    padding: 0.5rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    width: max-content; max-width: 280px;
+    white-space: normal;
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+    z-index: 200;
+}
+.runner-pill:hover .runner-tip { display: block; }
+
+/* ---- Runner-offline banner (ops tables) ---- */
+.runner-banner { margin-bottom: 0.8rem; }
+.runner-banner code, .log-warning { font-weight: 600; }
+
+/* ---- Op action buttons ---- */
+.op-actions { white-space: nowrap; }
+.op-actions .btn { margin-left: 0.3rem; }
+.op-actions .btn:first-child { margin-left: 0; }
+
+/* ---- Header Access link ---- */
+.top-bar .top-link { color: #fff; opacity: 0.85; font-size: 0.85rem; }
+.top-bar .top-link:hover { opacity: 1; text-decoration: underline; }
+
+/* ---- RBAC matrix (Access page) ---- */
+.matrix-wrap { overflow-x: auto; }
+.rbac-matrix th.my-role { background: var(--primary); color: #fff; }
+.rbac-matrix .cell-yes { color: var(--success); font-weight: 700; text-align: center; }
+.rbac-matrix .cell-no  { color: var(--muted); text-align: center; }
+
+/* ---- Minted token box ---- */
+.token-box { margin-top: 1rem; }
+.token-box textarea {
+    width: 100%;
+    font-family: monospace;
+    font-size: 0.78rem;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--code-bg);
+    resize: vertical;
+    margin: 0.4rem 0;
+}
+
+/* ---- Containers panel ---- */
+.containers-note { margin-top: 0.5rem; font-size: 0.82rem; }

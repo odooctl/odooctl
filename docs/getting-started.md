@@ -7,13 +7,13 @@ This guide takes a globally installed `odooctl` from zero to a first verified Do
 Install the current stable release from PyPI:
 
 ```bash
-pipx install 'odooctl==0.2.0'
-# or: uv tool install 'odooctl==0.2.0'
+pipx install 'odooctl==0.3.0'
+# or: uv tool install 'odooctl==0.3.0'
 odooctl --version
 ```
 
-The `0.3.0b1` beta is opt-in and never an implicit stable upgrade. Use the
-exact beta/rollback commands in [Installation](installation.md#release-channels).
+The `0.3.0b1` beta remains an immutable prerelease snapshot. Use the stable
+upgrade and rollback commands in [Installation](installation.md#release-channels).
 
 Install optional S3 support only when you need remote backup uploads:
 
@@ -28,6 +28,8 @@ uv tool install 'odooctl[s3]'
 Run `odooctl` from a tracked Odoo project directory that contains your `docker-compose.yml`, addons, Odoo config, and `odooctl.yml`.
 
 You do not have to write `odooctl.yml` by hand: `odooctl import <path>` generates it from an existing Docker Compose deployment (read-only preview first, `--yes` to write), and `odooctl setup` scaffolds it for a brand-new project from a catalog stack template.
+
+Machine-specific values (ports, TLS off, local paths) belong in a gitignored [`odooctl.local.yml` overlay](configuration.md#machine-local-overlay-odooctllocalyml), not in the shared config.
 
 For Docker Compose deployments, prefer Docker-native execution mode so operators do not need host PostgreSQL clients:
 

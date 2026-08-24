@@ -7,6 +7,7 @@ from odooctl.operations.audit import AuditStore
 from odooctl.operations.engine import run_operation
 from odooctl.operations.models import OperationKind
 from odooctl.operations.store import OperationStore
+from odooctl.security.principals import local_actor
 
 
 def execute(environment: str, branch: str | None = None, config_path: str = "odooctl.yml") -> None:
@@ -19,7 +20,7 @@ def execute(environment: str, branch: str | None = None, config_path: str = "odo
         kind=OperationKind.DEPLOY,
         project=ctx.project.config.project.name,
         environment=environment,
-        actor="cli",
+        actor=local_actor(),
         params_redacted={"environment": environment, "branch": branch},
         state_dir=ctx.project.state_dir,
     ) as op_ctx:

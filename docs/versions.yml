@@ -8,17 +8,23 @@ versions:
   - version: 0.3.0b1
     channel: beta
     ref: v0.3.0b1
+  - version: 0.3.0
+    channel: stable
+    ref: v0.3.0
+    # The release PR is built before its immutable tag exists. The publisher
+    # skips only this explicitly pending ref; it builds it at tag time.
+    pending: true
 
 # Channel aliases are full copies in the published tree, not redirects. That
 # keeps /docs/stable/ and /docs/beta/ usable by offline mirrors and makes the
 # target explicit in versions.json.
 aliases:
-  stable: 0.2.0
+  stable: 0.3.0
   beta: 0.3.0b1
 
 # Preserve the original /docs/ entry point as the stable channel. Existing
 # bookmarks must not become 404s when versioned publishing is enabled.
-default: 0.2.0
+default: 0.3.0
 
 # The publisher always builds this checkout independently of immutable refs.
 development:

@@ -4,7 +4,7 @@ The documentation site publishes immutable snapshots alongside channel aliases:
 
 | Channel | Alias | Current snapshot |
 | --- | --- | --- |
-| Stable | `/docs/` and `/docs/stable/` | [`0.2.0`](/docs/0.2.0/) |
+| Stable | `/docs/` and `/docs/stable/` | [`0.3.0`](/docs/0.3.0/) |
 | Beta | `/docs/beta/` | [`0.3.0b1`](/docs/0.3.0b1/) |
 | Development | `/docs/dev/` | current `master` checkout |
 
