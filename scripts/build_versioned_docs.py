@@ -96,6 +96,22 @@ def _stage_docs(source: Path, support_root: Path) -> None:
             markdown.write_text(markdown.read_text().replace("SECURITY.md", "security-policy.md"))
 
 
+def _remove_pending_snapshot_links(source: Path, pending_versions: set[str]) -> None:
+    """Avoid dead immutable-snapshot links in development release-prep docs.
+
+    This is intentionally applied only while a manifest item is explicitly
+    pending and its tag is unavailable. Tagged release sources are untouched.
+    """
+    for markdown in (source / "docs").rglob("*.md"):
+        content = markdown.read_text()
+        for version in pending_versions:
+            content = content.replace(
+                f"[`{version}`](/docs/{version}/)",
+                f"`{version}` (pending release tag)",
+            )
+        markdown.write_text(content)
+
+
 def _replace_nav_path(value: Any, old: str, new: str) -> Any:
     if isinstance(value, list):
         return [_replace_nav_path(item, old, new) for item in value]
@@ -158,6 +174,7 @@ def build_one(
     commit: str,
     assets_dir: Path,
     apply_backports: bool,
+    pending_versions: set[str] | None = None,
 ) -> None:
     """Build one source checkout and fail if its package version is different."""
     package = tomllib.loads((source / "pyproject.toml").read_text())["project"]["version"]
@@ -172,6 +189,7 @@ def build_one(
             ignore=shutil.ignore_patterns(".git", ".venv", "site", "dist", "build", "__pycache__", "*.pyc"),
         )
         _stage_docs(build_source, assets_dir.parent.parent)
+        _remove_pending_snapshot_links(build_source, pending_versions or set())
         if apply_backports:
             _apply_backport(build_source, version, assets_dir.parent.parent)
         checker = assets_dir.parent.parent / "scripts" / "check_documented_commands.py"
@@ -258,6 +276,7 @@ def build_site(repo_root: Path, site_dir: Path, versions_file: Path, assets_dir:
         commit=dev_commit,
         assets_dir=assets_dir,
         apply_backports=False,
+        pending_versions=pending_versions,
     )
     versions.append({"version": dev_version, "channel": dev_channel, "ref": "master", "commit": dev_commit,
                      "published_at": published_at, "canonical_url": f"/docs/{dev_channel}/"})

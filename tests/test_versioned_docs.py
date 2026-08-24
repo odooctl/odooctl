@@ -99,3 +99,15 @@ def test_unknown_alias_still_fails_closed() -> None:
             [{"version": "1.0.0", "channel": "stable"}],
             set(),
         )
+
+
+def test_pending_snapshot_links_are_removed_only_for_pending_versions(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    docs = source / "docs"
+    docs.mkdir(parents=True)
+    page = docs / "documentation-versions.md"
+    page.write_text("[`2.0.0`](/docs/2.0.0/) [`1.0.0`](/docs/1.0.0/)\n")
+
+    build_versioned_docs._remove_pending_snapshot_links(source, {"2.0.0"})
+
+    assert page.read_text() == "`2.0.0` (pending release tag) [`1.0.0`](/docs/1.0.0/)\n"
